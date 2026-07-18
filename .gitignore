@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-electron/
+release/
+resources/ffmpeg/*
+!resources/ffmpeg/.gitkeep
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*

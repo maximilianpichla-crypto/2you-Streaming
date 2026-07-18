@@ -1,0 +1,587 @@
+import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { app } from 'electron'
+import {
+  EncoderSettings,
+  Scene,
+  StreamSettings,
+  StreamSource,
+  StreamStatus,
+  VideoEncoderId,
+  getEncoderInfo,
+  isVisualSource,
+  normalizeTransform,
+  resolveRtmpUrl,
+} from '../src/shared/types'
+
+export type StatusListener = (status: StreamStatus) => void
+
+export function getFfmpegPath(): string {
+  const bundled = app.isPackaged
+    ? path.join(process.resourcesPath, 'ffmpeg', 'ffmpeg.exe')
+    : path.join(app.getAppPath(), 'resources', 'ffmpeg', 'ffmpeg.exe')
+
+  if (fs.existsSync(bundled)) return bundled
+  return 'ffmpeg'
+}
+
+export async function listDshowDevices(): Promise<{
+  video: string[]
+  audio: string[]
+}> {
+  const ffmpegPath = getFfmpegPath()
+  return new Promise((resolve) => {
+    const video: string[] = []
+    const audio: string[] = []
+    const child = spawn(
+      ffmpegPath,
+      ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
+      { windowsHide: true },
+    )
+    let out = ''
+    child.stderr.on('data', (buf: Buffer) => {
+      out += buf.toString('utf8')
+    })
+    child.on('close', () => {
+      const lines = out.split(/\r?\n/)
+      for (const line of lines) {
+        const match = line.match(/"([^"]+)"\s+\((audio|video)\)/i)
+        if (!match) continue
+        const name = match[1]
+        const kind = match[2].toLowerCase()
+        if (kind === 'audio') audio.push(name)
+        else video.push(name)
+      }
+      resolve({ video, audio })
+    })
+    child.on('error', () => resolve({ video: [], audio: [] }))
+  })
+}
+
+/** Welche H.264-Encoder FFmpeg auf diesem System anbietet */
+export async function detectAvailableEncoders(): Promise<VideoEncoderId[]> {
+  const ffmpegPath = getFfmpegPath()
+  return new Promise((resolve) => {
+    const child = spawn(ffmpegPath, ['-hide_banner', '-encoders'], {
+      windowsHide: true,
+    })
+    let out = ''
+    child.stdout.on('data', (buf: Buffer) => {
+      out += buf.toString('utf8')
+    })
+    child.stderr.on('data', (buf: Buffer) => {
+      out += buf.toString('utf8')
+    })
+    child.on('close', () => {
+      const available: VideoEncoderId[] = ['x264']
+      if (/^\s*.*h264_nvenc\b/m.test(out) || /\bh264_nvenc\b/.test(out)) {
+        available.push('nvenc')
+      }
+      if (/\bh264_amf\b/.test(out)) available.push('amf')
+      if (/\bh264_qsv\b/.test(out)) available.push('qsv')
+      // libx264 always preferred as software fallback
+      if (!/\blibx264\b/.test(out) && available[0] === 'x264') {
+        // keep x264 anyway – most builds have it
+      }
+      resolve(available)
+    })
+    child.on('error', () => resolve(['x264']))
+  })
+}
+
+function buildVideoEncoderArgs(encoder: EncoderSettings, fps: number): string[] {
+  const info = getEncoderInfo(encoder.videoEncoder)
+  const preset = encoder.preset || info.defaultPreset
+  const vBitrate = `${encoder.videoBitrate}k`
+  const bufsize = `${encoder.videoBitrate * 2}k`
+  const gop = String(fps * 2)
+  const args: string[] = []
+
+  switch (encoder.videoEncoder) {
+    case 'nvenc':
+      args.push(
+        '-c:v',
+        'h264_nvenc',
+        '-preset',
+        preset,
+        '-tune',
+        'll',
+        '-rc',
+        'cbr',
+        '-b:v',
+        vBitrate,
+        '-maxrate',
+        vBitrate,
+        '-bufsize',
+        bufsize,
+        '-profile:v',
+        'high',
+        '-pix_fmt',
+        'yuv420p',
+        '-g',
+        gop,
+      )
+      break
+    case 'amf':
+      args.push(
+        '-c:v',
+        'h264_amf',
+        '-quality',
+        preset,
+        '-rc',
+        'cbr',
+        '-b:v',
+        vBitrate,
+        '-maxrate',
+        vBitrate,
+        '-bufsize',
+        bufsize,
+        '-pix_fmt',
+        'yuv420p',
+        '-g',
+        gop,
+      )
+      break
+    case 'qsv':
+      args.push(
+        '-c:v',
+        'h264_qsv',
+        '-preset',
+        preset,
+        '-b:v',
+        vBitrate,
+        '-maxrate',
+        vBitrate,
+        '-bufsize',
+        bufsize,
+        '-pix_fmt',
+        'yuv420p',
+        '-g',
+        gop,
+      )
+      break
+    case 'x264':
+    default:
+      args.push(
+        '-c:v',
+        'libx264',
+        '-preset',
+        preset,
+        '-tune',
+        'zerolatency',
+        '-pix_fmt',
+        'yuv420p',
+        '-b:v',
+        vBitrate,
+        '-maxrate',
+        vBitrate,
+        '-bufsize',
+        bufsize,
+        '-g',
+        gop,
+      )
+      break
+  }
+
+  return args
+}
+
+function parseResolution(res: EncoderSettings['resolution']): { w: number; h: number } {
+  const [w, h] = res.split('x').map(Number)
+  return { w, h }
+}
+
+function escapeDrawtext(text: string): string {
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/:/g, '\\:')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+}
+
+function escapePath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/:/g, '\\:')
+}
+
+function hexToFfmpegColor(hex: string): string {
+  const h = hex.replace('#', '')
+  if (h.length === 6) return `0x${h}`
+  return '0x1a2332'
+}
+
+/**
+ * Build FFmpeg args: black canvas + layered sources with transform overlays.
+ */
+export function buildFfmpegArgs(options: {
+  settings: StreamSettings
+  scene: Scene
+  displayIndex: number
+}): string[] {
+  const { settings, scene, displayIndex } = options
+  const { w, h } = parseResolution(settings.encoder.resolution)
+  const fps = settings.encoder.fps
+  const aBitrate = `${settings.encoder.audioBitrate}k`
+
+  const enabled = scene.sources.filter((s) => s.enabled)
+  const visual = enabled.filter((s) => isVisualSource(s.type))
+  const mic = enabled.find((s) => s.type === 'microphone')
+  const desktopAudio = enabled.find(
+    (s) => s.type === 'desktop_audio' || s.type === 'app_audio',
+  )
+
+  const rtmpBase = resolveRtmpUrl(settings)
+  const key = settings.streamKey.trim()
+  if (!rtmpBase) throw new Error('RTMP-URL fehlt')
+  if (!key) throw new Error('Stream-Key fehlt')
+  const rtmpUrl = `${rtmpBase.replace(/\/$/, '')}/${key}`
+
+  const args: string[] = ['-hide_banner', '-loglevel', 'info', '-stats', '-y']
+  let inputIndex = 0
+  const filterParts: string[] = []
+
+  // Base canvas
+  args.push(
+    '-f',
+    'lavfi',
+    '-i',
+    `color=c=0x000000:s=${w}x${h}:r=${fps}`,
+  )
+  const baseInput = inputIndex++
+  filterParts.push(`[${baseInput}:v]format=yuv420p,setsar=1[base]`)
+  let current = 'base'
+  let layer = 0
+
+  function pushOverlay(source: StreamSource, inIdx: number, opts?: { isImage?: boolean }) {
+    const t = normalizeTransform(source.transform, source.type)
+    const ow = Math.max(2, Math.round((t.widthPercent / 100) * w))
+    const oh = Math.max(2, Math.round((t.heightPercent / 100) * h))
+    const ox = Math.round((t.xPercent / 100) * w)
+    const oy = Math.round((t.yPercent / 100) * h)
+    const scaled = `l${layer}`
+    const next = `c${layer}`
+    const scaleFilter = opts?.isImage
+      ? `[${inIdx}:v]scale=${ow}:${oh}:force_original_aspect_ratio=decrease,pad=${ow}:${oh}:(ow-iw)/2:(oh-ih)/2,format=rgba[${scaled}]`
+      : `[${inIdx}:v]scale=${ow}:${oh}:force_original_aspect_ratio=decrease,pad=${ow}:${oh}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}[${scaled}]`
+    filterParts.push(scaleFilter)
+    filterParts.push(
+      `[${current}][${scaled}]overlay=${ox}:${oy}:format=auto[${next}]`,
+    )
+    current = next
+    layer++
+  }
+
+  for (const source of visual) {
+    if (source.type === 'browser' || source.type === 'scene') continue
+
+    if (source.type === 'text' && source.settings?.text) {
+      const t = normalizeTransform(source.transform, source.type)
+      const ox = Math.round((t.xPercent / 100) * w)
+      const oy = Math.round((t.yPercent / 100) * h)
+      const txt = escapeDrawtext(source.settings.text)
+      const fs = source.settings.fontSize ?? 48
+      const fc = (source.settings.fontColor ?? '#ffffff').replace('#', '')
+      const next = `c${layer}`
+      filterParts.push(
+        `[${current}]drawtext=text='${txt}':fontsize=${fs}:fontcolor=0x${fc}:x=${ox}:y=${oy}[${next}]`,
+      )
+      current = next
+      layer++
+      continue
+    }
+
+    if (source.type === 'color') {
+      const c = hexToFfmpegColor(source.settings?.color ?? '#1a2332')
+      const t = normalizeTransform(source.transform, source.type)
+      const ow = Math.max(2, Math.round((t.widthPercent / 100) * w))
+      const oh = Math.max(2, Math.round((t.heightPercent / 100) * h))
+      args.push('-f', 'lavfi', '-i', `color=c=${c}:s=${ow}x${oh}:r=${fps}`)
+      const idx = inputIndex++
+      const next = `c${layer}`
+      const ox = Math.round((t.xPercent / 100) * w)
+      const oy = Math.round((t.yPercent / 100) * h)
+      filterParts.push(
+        `[${current}][${idx}:v]overlay=${ox}:${oy}:format=auto[${next}]`,
+      )
+      current = next
+      layer++
+      continue
+    }
+
+    if (source.type === 'display') {
+      const drawMouse = source.settings?.captureCursor === false ? '0' : '1'
+      // gdigrab desktop = primary; multi-monitor offset not wired yet
+      args.push(
+        '-f',
+        'gdigrab',
+        '-framerate',
+        String(fps),
+        '-draw_mouse',
+        drawMouse,
+        '-i',
+        'desktop',
+      )
+      void displayIndex
+      pushOverlay(source, inputIndex++)
+      continue
+    }
+
+    if (source.type === 'window' || source.type === 'game') {
+      const title =
+        source.settings?.windowTitle || source.deviceLabel || source.name
+      args.push(
+        '-f',
+        'gdigrab',
+        '-framerate',
+        String(fps),
+        '-draw_mouse',
+        source.settings?.captureCursor === false ? '0' : '1',
+        '-i',
+        `title=${title}`,
+      )
+      pushOverlay(source, inputIndex++)
+      continue
+    }
+
+    if (source.type === 'webcam') {
+      const name = source.deviceLabel || source.deviceId || ''
+      if (!name) continue
+      args.push(
+        '-f',
+        'dshow',
+        '-framerate',
+        String(Math.min(fps, 30)),
+        '-i',
+        `video=${name}`,
+      )
+      pushOverlay(source, inputIndex++)
+      continue
+    }
+
+    if (source.type === 'media' && source.settings?.filePath) {
+      if (source.settings.loop) args.push('-stream_loop', '-1')
+      args.push('-re', '-i', source.settings.filePath)
+      pushOverlay(source, inputIndex++)
+      continue
+    }
+
+    if (source.type === 'image' && source.settings?.filePath) {
+      args.push('-loop', '1', '-framerate', String(fps), '-i', source.settings.filePath)
+      pushOverlay(source, inputIndex++, { isImage: true })
+      continue
+    }
+
+    if (source.type === 'slideshow' && source.settings?.filePaths?.[0]) {
+      args.push(
+        '-loop',
+        '1',
+        '-framerate',
+        String(fps),
+        '-i',
+        source.settings.filePaths[0],
+      )
+      pushOverlay(source, inputIndex++, { isImage: true })
+    }
+  }
+
+  // Rename final video to [vout]
+  filterParts.push(`[${current}]null[vout]`)
+
+  // --- Audio inputs ---
+  type AudioTrack = { index: number; volume: number }
+  const audioTracks: AudioTrack[] = []
+
+  const micName = mic?.deviceLabel || mic?.deviceId || ''
+  if (mic && micName) {
+    args.push('-f', 'dshow', '-i', `audio=${micName}`)
+    audioTracks.push({
+      index: inputIndex++,
+      volume: Math.max(0, Math.min(100, mic.settings?.volume ?? 100)) / 100,
+    })
+  }
+
+  const deskName = desktopAudio?.deviceLabel || desktopAudio?.deviceId || ''
+  if (desktopAudio && deskName) {
+    args.push('-f', 'dshow', '-i', `audio=${deskName}`)
+    audioTracks.push({
+      index: inputIndex++,
+      volume: Math.max(0, Math.min(100, desktopAudio.settings?.volume ?? 100)) / 100,
+    })
+  }
+
+  if (audioTracks.length === 0) {
+    args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000')
+    audioTracks.push({ index: inputIndex++, volume: 1 })
+  }
+
+  if (audioTracks.length === 1) {
+    const t = audioTracks[0]
+    filterParts.push(
+      `[${t.index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${t.volume}[aout]`,
+    )
+  } else {
+    const labels = audioTracks.map((t, idx) => {
+      filterParts.push(
+        `[${t.index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${t.volume}[a${idx}]`,
+      )
+      return `[a${idx}]`
+    })
+    filterParts.push(
+      `${labels.join('')}amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2[aout]`,
+    )
+  }
+
+  args.push('-filter_complex', filterParts.join(';'))
+  args.push('-map', '[vout]', '-map', '[aout]')
+  args.push(...buildVideoEncoderArgs(settings.encoder, fps))
+  args.push(
+    '-c:a',
+    'aac',
+    '-b:a',
+    aBitrate,
+    '-ar',
+    '48000',
+    '-ac',
+    '2',
+    '-shortest',
+    '-f',
+    'flv',
+    rtmpUrl,
+  )
+
+  void escapePath
+  return args
+}
+
+export class FfmpegStreamer {
+  private process: ChildProcessWithoutNullStreams | null = null
+  private listener: StatusListener | null = null
+  private status: StreamStatus = {
+    streaming: false,
+    startedAt: null,
+    bitrateKbps: null,
+    fps: null,
+    error: null,
+    lastLogLine: null,
+  }
+
+  onStatus(listener: StatusListener): void {
+    this.listener = listener
+  }
+
+  getStatus(): StreamStatus {
+    return { ...this.status }
+  }
+
+  private emit(): void {
+    this.listener?.(this.getStatus())
+  }
+
+  private setPartial(partial: Partial<StreamStatus>): void {
+    this.status = { ...this.status, ...partial }
+    this.emit()
+  }
+
+  async start(options: {
+    settings: StreamSettings
+    scene: Scene
+    displayIndex: number
+  }): Promise<void> {
+    if (this.process) {
+      throw new Error('Stream läuft bereits')
+    }
+
+    const ffmpegPath = getFfmpegPath()
+    if (ffmpegPath !== 'ffmpeg' && !fs.existsSync(ffmpegPath)) {
+      throw new Error(
+        'FFmpeg nicht gefunden. Bitte npm run fetch-ffmpeg ausführen.',
+      )
+    }
+
+    const args = buildFfmpegArgs(options)
+    this.setPartial({
+      streaming: true,
+      startedAt: Date.now(),
+      bitrateKbps: null,
+      fps: null,
+      error: null,
+      lastLogLine: null,
+    })
+
+    const child = spawn(ffmpegPath, args, {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    this.process = child
+
+    const onData = (buf: Buffer) => {
+      const text = buf.toString('utf8')
+      const lines = text.split(/\r?\n/).filter(Boolean)
+      for (const line of lines) {
+        this.parseLogLine(line)
+      }
+    }
+
+    child.stdout.on('data', onData)
+    child.stderr.on('data', onData)
+
+    child.on('error', (err) => {
+      this.process = null
+      this.setPartial({
+        streaming: false,
+        error: err.message,
+        startedAt: null,
+      })
+    })
+
+    child.on('close', (code) => {
+      this.process = null
+      const errored = Boolean(code && code !== 0)
+      this.setPartial({
+        streaming: false,
+        startedAt: null,
+        error: errored
+          ? this.status.error || `FFmpeg beendet mit Code ${code}`
+          : null,
+      })
+    })
+  }
+
+  stop(): void {
+    if (!this.process) {
+      this.setPartial({ streaming: false, startedAt: null })
+      return
+    }
+    const proc = this.process
+    try {
+      proc.stdin.write('q')
+      proc.stdin.end()
+    } catch {
+      // ignore
+    }
+    setTimeout(() => {
+      if (this.process === proc) {
+        proc.kill()
+        this.process = null
+        this.setPartial({ streaming: false, startedAt: null })
+      }
+    }, 1500)
+  }
+
+  private parseLogLine(line: string): void {
+    this.setPartial({ lastLogLine: line })
+
+    const fpsMatch = line.match(/fps=\s*([\d.]+)/)
+    const brMatch = line.match(/bitrate=\s*([\d.]+)kbits\/s/)
+    const partial: Partial<StreamStatus> = {}
+    if (fpsMatch) partial.fps = Number(fpsMatch[1])
+    if (brMatch) partial.bitrateKbps = Math.round(Number(brMatch[1]))
+    if (Object.keys(partial).length) {
+      this.setPartial(partial)
+    }
+
+    if (/Could not find|No such|Connection refused|Server error|Error opening/i.test(line)) {
+      this.setPartial({ error: line })
+    }
+  }
+}
