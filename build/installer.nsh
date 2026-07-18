@@ -4,6 +4,9 @@
 !include "nsDialogs.nsh"
 !include "LogicLib.nsh"
 !include "WinMessages.nsh"
+!include "FileFunc.nsh"
+!insertmacro GetParameters
+!insertmacro GetOptions
 
 !ifndef BUILD_UNINSTALLER
 Var TwoYouDialog
@@ -12,6 +15,10 @@ Var TwoYouBody
 Var TwoYouHint
 
 Function TwoYouFeaturesPage
+  ; Auto-Update / stiller Lauf: keine Seite anzeigen
+  IfSilent 0 +2
+    Abort
+
   nsDialogs::Create 1018
   Pop $TwoYouDialog
   ${If} $TwoYouDialog == error
@@ -43,6 +50,17 @@ FunctionEnd
   !define MUI_FINISHPAGE_RUN_TEXT "2you Streaming jetzt starten"
   !define MUI_FINISHPAGE_TITLE "Installation abgeschlossen"
   !define MUI_FINISHPAGE_TEXT "2you Streaming ist bereit.$\r$\n$\r$\nDu kannst Szenen, Audio und Stream-Ziele direkt in der App einrichten. Updates werden künftig automatisch geladen."
+!macroend
+
+; Auto-Updates von electron-updater kommen mit --updated.
+; Auch ohne /S (ältere Clients) zwingend still installieren — kein Wizard.
+!macro customInit
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "--updated" $R1
+  ${IfNot} ${Errors}
+    SetSilent silent
+  ${EndIf}
 !macroend
 
 !macro customWelcomePage

@@ -1,10 +1,10 @@
 {
-  "version": "1.0.4",
-  "publishedAt": "2026-07-18T18:46:49.713Z",
+  "version": "1.0.5",
+  "publishedAt": "2026-07-18T18:52:10.798Z",
   "minVersion": null,
-  "downloadUrl": "https://github.com/maximilianpichla-crypto/2you-Streaming/releases/download/v1.0.4/2you-Streaming-Setup-1.0.4.exe",
-  "title": "Update 1.0.4",
-  "body": "Updates werden still installiert — ohne Installer-Assistent. Einstellungen bleiben erhalten.",
+  "downloadUrl": "https://github.com/maximilianpichla-crypto/2you-Streaming/releases/download/v1.0.5/2you-Streaming-Setup-1.0.5.exe",
+  "title": "Update 1.0.5",
+  "body": "Updates installieren still ohne Installer-Fenster. Einstellungen bleiben erhalten.",
   "level": "update",
   "announcements": []
 }

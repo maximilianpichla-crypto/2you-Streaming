@@ -1,5 +1,9 @@
 import { app, BrowserWindow } from 'electron'
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 import { autoUpdater } from 'electron-updater'
+import type { UpdateDownloadedEvent } from 'electron-updater'
 
 export type AutoUpdateStatus = {
   state:
@@ -25,6 +29,8 @@ let lastStatus: AutoUpdateStatus = { state: 'idle' }
 let started = false
 let canAutoRestart: () => boolean = () => true
 let autoInstallTimer: ReturnType<typeof setTimeout> | null = null
+let pendingInstallerPath: string | null = null
+let installStarted = false
 
 function emit(partial: Partial<AutoUpdateStatus> & { state: AutoUpdateStatus['state'] }) {
   lastStatus = { ...lastStatus, ...partial }
@@ -51,24 +57,87 @@ function clearAutoInstallTimer(): void {
   }
 }
 
-/** Still installieren — kein NSIS-Assistent (/S). */
+/**
+ * Installer selbst mit /S + --updated starten.
+ * Umgeht electron-updater-Fallback (shell.openPath ohne Flags → sichtbarer Wizard).
+ */
+function spawnSilentInstaller(installerPath: string, forceRunAfter: boolean): boolean {
+  if (!fs.existsSync(installerPath)) {
+    emit({
+      state: 'error',
+      message: `Update-Datei fehlt: ${installerPath}`,
+    })
+    return false
+  }
+
+  const installDir = path.dirname(process.execPath)
+  // /D= muss bei NSIS das letzte Argument sein
+  const args = ['--updated', '/S']
+  if (forceRunAfter) args.push('--force-run')
+  args.push(`/D=${installDir}`)
+
+  try {
+    const child = spawn(installerPath, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    child.on('error', (err) => {
+      console.error('[autoUpdate] spawn failed', err)
+      // Letzter Fallback: quitAndInstall still (nicht openPath)
+      autoUpdater.autoInstallOnAppQuit = false
+      try {
+        autoUpdater.quitAndInstall(true, forceRunAfter)
+      } catch (e) {
+        emit({
+          state: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+    })
+    child.unref()
+    return true
+  } catch (err) {
+    emit({
+      state: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    })
+    return false
+  }
+}
+
+/** Still installieren — kein NSIS-Assistent. */
 function runSilentInstall(forceRunAfter: boolean): boolean {
-  if (lastStatus.state !== 'downloaded') return false
+  if (lastStatus.state !== 'downloaded' && !pendingInstallerPath) return false
+  if (installStarted) return true
   clearAutoInstallTimer()
+  installStarted = true
+  // Verhindert zweiten Install-Versuch von electron-updater beim Quit (ggf. ohne /S)
+  autoUpdater.autoInstallOnAppQuit = false
+
   emit({
     state: 'downloaded',
     message: 'Update wird still installiert…',
   })
+
+  const installer = pendingInstallerPath
   setImmediate(() => {
-    // isSilent=true → /S (kein Wizard), isForceRunAfter → App danach starten
-    autoUpdater.quitAndInstall(true, forceRunAfter)
+    let ok = false
+    if (installer) {
+      ok = spawnSilentInstaller(installer, forceRunAfter)
+    }
+    if (!ok) {
+      autoUpdater.quitAndInstall(true, forceRunAfter)
+    } else {
+      app.quit()
+    }
   })
   return true
 }
 
 /**
  * Nach Download: ohne Stream sofort still neu starten.
- * Während eines Streams: beim Beenden still installieren (electron-updater).
+ * Während eines Streams: beim Beenden still installieren.
  */
 function scheduleSilentAutoInstall(version?: string): void {
   clearAutoInstallTimer()
@@ -79,6 +148,13 @@ function scheduleSilentAutoInstall(version?: string): void {
       percent: 100,
       message:
         'Update geladen — wird beim Beenden still installiert (kein Installer-Fenster)',
+    })
+    // Beim Beenden still starten (mit /S), kein sichtbarer Wizard
+    app.once('before-quit', () => {
+      if (installStarted || !pendingInstallerPath) return
+      installStarted = true
+      autoUpdater.autoInstallOnAppQuit = false
+      spawnSilentInstaller(pendingInstallerPath, true)
     })
     return
   }
@@ -92,7 +168,7 @@ function scheduleSilentAutoInstall(version?: string): void {
 
   autoInstallTimer = setTimeout(() => {
     autoInstallTimer = null
-    if (lastStatus.state !== 'downloaded') return
+    if (installStarted) return
     if (!canAutoRestart()) {
       emit({
         state: 'downloaded',
@@ -127,6 +203,7 @@ export function setupAutoUpdater(options?: {
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.allowDowngrade = false
   autoUpdater.autoRunAppAfterInstall = true
+  autoUpdater.disableWebInstaller = true
   // Unsignierte Builds: sonst schlägt die Signaturprüfung fehl
   autoUpdater.forceDevUpdateConfig = false
 
@@ -157,7 +234,9 @@ export function setupAutoUpdater(options?: {
     })
   })
 
-  autoUpdater.on('update-downloaded', (info) => {
+  autoUpdater.on('update-downloaded', (info: UpdateDownloadedEvent) => {
+    pendingInstallerPath = info.downloadedFile || null
+    installStarted = false
     emit({
       state: 'downloaded',
       version: info.version,
