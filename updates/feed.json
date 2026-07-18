@@ -1,10 +1,10 @@
 {
   "version": "1.0.0",
-  "publishedAt": "2026-07-18T17:15:58.309Z",
+  "publishedAt": "2026-07-18T17:29:51.741Z",
   "minVersion": null,
   "downloadUrl": "",
-  "title": "Twitch-Badges live",
-  "body": "VIP, Mods und Broadcaster-Badges erscheinen jetzt im Chat.",
-  "level": "update",
+  "title": "Update-Kanal aktiv",
+  "body": "GitHub-Feed funktioniert. Nachrichten von hier erreichen dich jetzt.",
+  "level": "important",
   "announcements": []
 }
