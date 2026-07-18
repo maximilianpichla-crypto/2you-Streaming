@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateCheckResult } from '../shared/updates'
+import type { AutoUpdateStatus } from '../../electron/autoUpdate'
 
 const HOUR_MS = 60 * 60 * 1000
 
 type Props = {
-  /** Erhöhen = sofort erneut prüfen (z. B. Button) */
   checkRequest?: number
-  /** Nur bei manuellem Check (checkRequest-Änderung) */
   onManualChecked?: (result: UpdateCheckResult | null) => void
 }
 
 export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
   const [result, setResult] = useState<UpdateCheckResult | null>(null)
+  const [auto, setAuto] = useState<AutoUpdateStatus | null>(null)
   const [checking, setChecking] = useState(false)
   const lastRequest = useRef(checkRequest)
 
@@ -20,7 +20,10 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
     try {
       const next = await window.twoYou.checkUpdates()
       setResult(next)
-      if (manual) onManualChecked?.(next)
+      if (manual) {
+        onManualChecked?.(next)
+        void window.twoYou.checkAutoUpdate()
+      }
     } catch {
       setResult(null)
       if (manual) onManualChecked?.(null)
@@ -29,15 +32,21 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
     }
   }
 
-  // Start + stündlich
   useEffect(() => {
     void load(false)
-    const timer = window.setInterval(() => void load(false), HOUR_MS)
-    return () => window.clearInterval(timer)
+    void window.twoYou.getAutoUpdateStatus().then(setAuto).catch(() => {})
+    const unsub = window.twoYou.onAutoUpdateStatus(setAuto)
+    const timer = window.setInterval(() => {
+      void load(false)
+      void window.twoYou.checkAutoUpdate()
+    }, HOUR_MS)
+    return () => {
+      unsub()
+      window.clearInterval(timer)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Manueller Button
   useEffect(() => {
     if (checkRequest === lastRequest.current) return
     lastRequest.current = checkRequest
@@ -46,15 +55,39 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checkRequest])
 
-  const item = result?.announcements[0]
-  if (!item && !result?.hasVersionUpdate) return null
+  const autoBusy =
+    auto?.state === 'checking' ||
+    auto?.state === 'available' ||
+    auto?.state === 'downloading' ||
+    auto?.state === 'downloaded'
 
-  const title = item?.title ?? result?.feed.title ?? 'Update'
-  const body = item?.body ?? result?.feed.body ?? ''
-  const level = item?.level ?? result?.feed.level ?? 'info'
-  const showDownload = Boolean(
-    result?.hasVersionUpdate && result.feed.downloadUrl,
-  )
+  const item = result?.announcements[0]
+  const showBanner =
+    Boolean(item) ||
+    Boolean(result?.hasVersionUpdate) ||
+    autoBusy ||
+    auto?.state === 'error'
+
+  if (!showBanner) return null
+
+  const title =
+    auto?.state === 'downloading'
+      ? 'Update wird geladen'
+      : auto?.state === 'downloaded'
+        ? 'Update bereit'
+        : auto?.state === 'available' || auto?.state === 'checking'
+          ? 'Update'
+          : (item?.title ?? result?.feed.title ?? 'Update')
+
+  const body =
+    auto?.message ||
+    item?.body ||
+    result?.feed.body ||
+    (result?.hasVersionUpdate
+      ? 'Update wird im Hintergrund geladen und beim Beenden installiert.'
+      : '')
+
+  const level = item?.level ?? result?.feed.level ?? 'update'
 
   async function dismiss() {
     const ids = result?.announcements.map((a) => a.id) ?? []
@@ -72,7 +105,7 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
 
   return (
     <div
-      className={`update-banner level-${level}${checking ? ' checking' : ''}`}
+      className={`update-banner level-${level}${checking || auto?.state === 'checking' ? ' checking' : ''}`}
       role="status"
     >
       <div className="update-banner-text">
@@ -81,26 +114,33 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
         {result?.hasVersionUpdate ? (
           <span className="update-banner-meta">
             v{result.appVersion} → v{result.feed.version}
-            {result.source === 'local' ? ' · lokal' : ''}
+          </span>
+        ) : null}
+        {auto?.state === 'downloading' && typeof auto.percent === 'number' ? (
+          <span className="update-banner-meta">
+            {Math.round(auto.percent)}%
           </span>
         ) : null}
       </div>
       <div className="update-banner-actions">
-        {showDownload ? (
+        {auto?.state === 'downloaded' ? (
           <button
             type="button"
             className="primary"
-            onClick={() => void window.twoYou.openUpdateDownload()}
+            onClick={() => void window.twoYou.installUpdateNow()}
           >
-            Download
+            Jetzt neu starten
           </button>
         ) : null}
-        {result?.hasVersionUpdate ? (
+        {auto?.state === 'downloading' ? (
+          <span className="update-banner-meta">Läuft automatisch…</span>
+        ) : null}
+        {result?.hasVersionUpdate && auto?.state !== 'downloaded' ? (
           <span className="update-banner-meta">
-            Deine Szenen &amp; Einstellungen bleiben erhalten.
+            Einstellungen bleiben erhalten.
           </span>
         ) : null}
-        {!result?.forceUpdate ? (
+        {!result?.forceUpdate && auto?.state !== 'downloading' ? (
           <button type="button" className="ghost" onClick={() => void dismiss()}>
             OK
           </button>

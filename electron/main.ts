@@ -20,6 +20,12 @@ import {
   dismissUpdateIds,
   openUpdateDownload,
 } from './updates'
+import {
+  checkAutoUpdate,
+  getAutoUpdateStatus,
+  installAutoUpdateNow,
+  setupAutoUpdater,
+} from './autoUpdate'
 import { getSystemStats } from './systemStats'
 import { subscribeLoopbackMeter } from './loopbackMeter'
 import type {
@@ -238,6 +244,9 @@ function registerIpc(): void {
   ipcMain.handle('updates:openDownload', (_e, url?: string) =>
     openUpdateDownload(url),
   )
+  ipcMain.handle('updates:autoCheck', () => checkAutoUpdate())
+  ipcMain.handle('updates:autoStatus', () => getAutoUpdateStatus())
+  ipcMain.handle('updates:installNow', () => installAutoUpdateNow())
   ipcMain.handle('system:stats', () => getSystemStats())
 
   const meterUnsubs = new Map<string, () => void>()
@@ -398,7 +407,10 @@ app.whenReady().then(() => {
   registerIpc()
   // App-Update: Szenen, Quellen, Settings bleiben in userData erhalten
   preserveConfigAcrossAppUpdate()
+  setupAutoUpdater()
   createWindow()
+  // Beim Start still Update von GitHub holen (nur gepackt)
+  void checkAutoUpdate()
 
   const runPick = (kind: PickKind) => {
     if (!mainWindow || mainWindow.isDestroyed()) return

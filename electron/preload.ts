@@ -71,6 +71,23 @@ const api = {
     ipcRenderer.invoke('updates:dismiss', ids),
   openUpdateDownload: (url?: string): Promise<boolean> =>
     ipcRenderer.invoke('updates:openDownload', url),
+  checkAutoUpdate: (): Promise<import('../electron/autoUpdate').AutoUpdateStatus> =>
+    ipcRenderer.invoke('updates:autoCheck'),
+  getAutoUpdateStatus: (): Promise<import('../electron/autoUpdate').AutoUpdateStatus> =>
+    ipcRenderer.invoke('updates:autoStatus'),
+  installUpdateNow: (): Promise<boolean> => ipcRenderer.invoke('updates:installNow'),
+  onAutoUpdateStatus: (
+    callback: (status: import('../electron/autoUpdate').AutoUpdateStatus) => void,
+  ): (() => void) => {
+    const listener = (
+      _e: Electron.IpcRendererEvent,
+      status: import('../electron/autoUpdate').AutoUpdateStatus,
+    ) => {
+      callback(status)
+    }
+    ipcRenderer.on('updates:autoStatus', listener)
+    return () => ipcRenderer.removeListener('updates:autoStatus', listener)
+  },
   getSystemStats: (): Promise<{
     cpuPercent: number | null
     cpuTempC: number | null

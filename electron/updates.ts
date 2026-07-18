@@ -1,4 +1,4 @@
-import { app, shell } from 'electron'
+import { app } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -133,13 +133,27 @@ export async function checkForUpdates(): Promise<UpdateCheckResult | null> {
   return null
 }
 
-export async function openUpdateDownload(url?: string): Promise<boolean> {
-  let href = url?.trim() || ''
-  if (!href) {
-    const result = await checkForUpdates()
-    href = result?.feed.downloadUrl?.trim() || ''
+import { checkAutoUpdate, getAutoUpdateStatus, installAutoUpdateNow } from './autoUpdate'
+
+export async function openUpdateDownload(_url?: string): Promise<boolean> {
+  const status = getAutoUpdateStatus()
+  if (status.state === 'downloaded') {
+    return installAutoUpdateNow()
   }
-  if (!href) return false
-  await shell.openExternal(href)
-  return true
+  if (
+    status.state === 'idle' ||
+    status.state === 'not-available' ||
+    status.state === 'error'
+  ) {
+    await checkAutoUpdate()
+  }
+  const again = getAutoUpdateStatus()
+  if (again.state === 'downloaded') {
+    return installAutoUpdateNow()
+  }
+  return (
+    again.state === 'downloading' ||
+    again.state === 'available' ||
+    again.state === 'checking'
+  )
 }

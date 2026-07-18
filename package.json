@@ -1,10 +1,14 @@
 {
   "name": "2you-streaming",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "2you Streaming – desktop streaming app for Twitch and more",
   "main": "dist-electron/main.js",
   "author": "2you Streaming",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maximilianpichla-crypto/2you-Streaming.git"
+  },
   "scripts": {
     "predev": "node scripts/free-port.js 5173 && node scripts/patch-vite-electron.js",
     "start": "vite",
@@ -16,6 +20,7 @@
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.js"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tmi.js": "^1.8.5"
@@ -39,6 +44,13 @@
     "directories": {
       "output": "release-out"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "maximilianpichla-crypto",
+        "repo": "2you-Streaming"
+      }
+    ],
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
@@ -72,7 +84,8 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "2you-Streaming-Setup-${version}.${ext}"
+      "artifactName": "2you-Streaming-Setup-${version}.${ext}",
+      "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "oneClick": false,

@@ -18,6 +18,7 @@ const root = path.join(__dirname, '..')
 const pkgPath = path.join(root, 'package.json')
 const releaseDir = path.join(root, 'release-out')
 const legacyReleaseDir = path.join(root, 'release')
+const tempReleaseDir = path.join(process.env.TEMP || process.env.TMP || '', '2you-ebuild')
 const feedPath = path.join(root, 'updates', 'feed.json')
 
 function arg(name, fallback = '') {
@@ -36,7 +37,9 @@ function run(cmd, opts = {}) {
 }
 
 function findInstaller(version) {
-  const dirs = [releaseDir, legacyReleaseDir].filter((d) => fs.existsSync(d))
+  const dirs = [releaseDir, legacyReleaseDir, tempReleaseDir].filter(
+    (d) => d && fs.existsSync(d),
+  )
   for (const dir of dirs) {
     const preferred = path.join(dir, `2you-Streaming-Setup-${version}.exe`)
     if (fs.existsSync(preferred)) return preferred
@@ -56,6 +59,17 @@ function findInstaller(version) {
     if (matches[0]) return matches[0]
   }
   return null
+}
+
+function siblingArtifacts(installerPath) {
+  const dir = path.dirname(installerPath)
+  const base = path.basename(installerPath)
+  const files = [installerPath]
+  for (const name of [`${base}.blockmap`, 'latest.yml', 'latest.yaml']) {
+    const p = path.join(dir, name)
+    if (fs.existsSync(p)) files.push(p)
+  }
+  return files
 }
 
 function checkSignature(file) {
@@ -142,6 +156,8 @@ if (sigStatus !== 'Valid') {
 const tag = `v${version}`
 const title = arg('title') || `2you Streaming ${version}`
 const draftFlag = draft ? ' --draft' : ''
+const artifacts = siblingArtifacts(installer)
+const artifactArgs = artifacts.map((f) => `"${f}"`).join(' ')
 
 try {
   execSync(`gh release view ${tag}`, {
@@ -149,11 +165,13 @@ try {
     stdio: 'pipe',
     shell: true,
   })
-  console.log(`[release] Release ${tag} existiert — Asset wird aktualisiert…`)
-  run(`gh release upload ${tag} "${installer}" --clobber`)
+  console.log(`[release] Release ${tag} existiert — Assets werden aktualisiert…`)
+  for (const file of artifacts) {
+    run(`gh release upload ${tag} "${file}" --clobber`)
+  }
 } catch {
   run(
-    `gh release create ${tag} "${installer}" --title "${title.replace(/"/g, '\\"')}" --notes "${notes.replace(/"/g, '\\"')}"${draftFlag}`,
+    `gh release create ${tag} ${artifactArgs} --title "${title.replace(/"/g, '\\"')}" --notes "${notes.replace(/"/g, '\\"')}"${draftFlag}`,
   )
 }
 
@@ -184,9 +202,8 @@ const feed = {
   downloadUrl,
   title: existing.title || `Version ${version}`,
   body:
-    existing.body ||
-    'Neuer Installer verfügbar. Einstellungen bleiben bei Updates erhalten.',
-  level: existing.level || 'update',
+    'Update wird beim Start automatisch geladen und beim Beenden installiert. Einstellungen bleiben erhalten.',
+  level: 'update',
   announcements: existing.announcements || [],
 }
 
