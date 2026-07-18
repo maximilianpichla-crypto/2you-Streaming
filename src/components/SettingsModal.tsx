@@ -34,6 +34,7 @@ export type SettingsCategory =
   | 'alerts'
   | 'transition'
   | 'appearance'
+  | 'plugins'
   | 'advanced'
 
 const CATEGORIES: { id: SettingsCategory; label: string }[] = [
@@ -45,6 +46,7 @@ const CATEGORIES: { id: SettingsCategory; label: string }[] = [
   { id: 'alerts', label: 'Alerts' },
   { id: 'transition', label: 'Übergang' },
   { id: 'appearance', label: 'Darstellung' },
+  { id: 'plugins', label: 'Plugins' },
   { id: 'advanced', label: 'Erweitert' },
 ]
 
@@ -58,6 +60,8 @@ interface Props {
   initialCategory?: SettingsCategory
   onClose: () => void
   onApply: (payload: { settings: StreamSettings; theme: ThemeColors }) => void
+  /** Browser-Plugin als Quelle in die aktive Szene legen */
+  onAddPluginSource?: (payload: { name: string; url: string }) => void
 }
 
 /** Map legacy tab names from StreamPanel */
@@ -80,10 +84,16 @@ export function SettingsModal({
   initialCategory = 'output',
   onClose,
   onApply,
+  onAddPluginSource,
 }: Props) {
   const [category, setCategory] = useState<SettingsCategory>(initialCategory)
   const [draftSettings, setDraftSettings] = useState(settings)
   const [draftTheme, setDraftTheme] = useState(theme)
+  const [plugins, setPlugins] = useState<
+    import('../../electron/plugins').InstalledPlugin[]
+  >([])
+  const [pluginMsg, setPluginMsg] = useState<string | null>(null)
+  const [pluginBusy, setPluginBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
 
   useEffect(() => {
@@ -97,6 +107,11 @@ export function SettingsModal({
     setDraftTheme(theme)
     setDirty(false)
   }, [open, initialCategory, settings, theme])
+
+  useEffect(() => {
+    if (!open || category !== 'plugins') return
+    void window.twoYou.listPlugins().then(setPlugins).catch(() => setPlugins([]))
+  }, [open, category])
 
   if (!open) return null
 
@@ -220,6 +235,9 @@ export function SettingsModal({
                   Standard: GitHub Raw →{' '}
                   <code>maximilianpichla-crypto/2you-Streaming</code>
                   {' '}/ <code>updates/feed.json</code>
+                </p>
+                <p className="obs-hint brand-about">
+                  2you Streaming — created by maxxxxxxxxam
                 </p>
               </div>
             )}
@@ -843,6 +861,158 @@ export function SettingsModal({
                 >
                   Standardfarben wiederherstellen
                 </button>
+              </div>
+            )}
+
+            {category === 'plugins' && (
+              <div className="obs-form plugins-panel">
+                <p className="obs-hint" style={{ paddingLeft: 0, marginTop: 0 }}>
+                  2you unterstützt <strong>Browser-Plugins</strong> (Ordner mit{' '}
+                  <code>plugin.json</code> + HTML). Native OBS-<code>.dll</code>
+                  -Plugins laufen nur in OBS Studio — dort installieren und OBS als
+                  Fenster-Quelle in 2you aufnehmen.
+                </p>
+
+                <div className="plugins-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={pluginBusy}
+                    onClick={async () => {
+                      setPluginBusy(true)
+                      setPluginMsg(null)
+                      const res = await window.twoYou.installPluginZip()
+                      setPlugins(res.plugins)
+                      setPluginMsg(
+                        res.ok
+                          ? 'Plugin installiert.'
+                          : res.error || 'Installation fehlgeschlagen',
+                      )
+                      setPluginBusy(false)
+                    }}
+                  >
+                    ZIP installieren
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={pluginBusy}
+                    onClick={async () => {
+                      setPluginBusy(true)
+                      setPluginMsg(null)
+                      const res = await window.twoYou.installPluginFolder()
+                      setPlugins(res.plugins)
+                      setPluginMsg(
+                        res.ok
+                          ? 'Plugin-Ordner übernommen.'
+                          : res.error || 'Fehlgeschlagen',
+                      )
+                      setPluginBusy(false)
+                    }}
+                  >
+                    Ordner hinzufügen
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void window.twoYou.openPluginsFolder()}
+                  >
+                    Plugin-Ordner öffnen
+                  </button>
+                </div>
+
+                {pluginMsg ? (
+                  <p
+                    className={`obs-hint plugins-msg`}
+                    style={{ paddingLeft: 0 }}
+                  >
+                    {pluginMsg}
+                  </p>
+                ) : null}
+
+                <div className="plugins-list">
+                  {plugins.length === 0 ? (
+                    <p className="obs-hint" style={{ paddingLeft: 0 }}>
+                      Noch keine Plugins. Beim ersten Öffnen wird ein Sample-Overlay
+                      angelegt.
+                    </p>
+                  ) : (
+                    plugins.map((p) => (
+                      <div
+                        key={p.id}
+                        className={`plugin-card ${p.type === 'unsupported-obs' ? 'unsupported' : ''}`}
+                      >
+                        <div className="plugin-card-main">
+                          <strong>{p.name}</strong>
+                          <span className="plugin-meta">
+                            v{p.version}
+                            {p.author ? ` · ${p.author}` : ''}
+                            {p.type === 'browser' ? ' · Browser' : ' · OBS-native'}
+                          </span>
+                          {p.description ? (
+                            <span className="plugin-desc">{p.description}</span>
+                          ) : null}
+                          {p.warning ? (
+                            <span className="plugin-warn">{p.warning}</span>
+                          ) : null}
+                        </div>
+                        <div className="plugin-card-actions">
+                          {p.type === 'browser' ? (
+                            <>
+                              <label className="plugin-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={p.enabled}
+                                  onChange={async (e) => {
+                                    const next = await window.twoYou.setPluginEnabled(
+                                      p.id,
+                                      e.target.checked,
+                                    )
+                                    setPlugins(next)
+                                  }}
+                                />
+                                Aktiv
+                              </label>
+                              <button
+                                type="button"
+                                className="ghost"
+                                disabled={!p.entryUrl || !p.enabled}
+                                onClick={() => {
+                                  if (!p.entryUrl) return
+                                  onAddPluginSource?.({
+                                    name: p.name,
+                                    url: p.entryUrl,
+                                  })
+                                  setPluginMsg(
+                                    `„${p.name}“ zur aktiven Szene hinzugefügt.`,
+                                  )
+                                }}
+                              >
+                                Zur Szene
+                              </button>
+                            </>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="ghost danger-text"
+                            onClick={async () => {
+                              const next = await window.twoYou.removePlugin(p.id)
+                              setPlugins(next)
+                              setPluginMsg(`„${p.name}“ entfernt.`)
+                            }}
+                          >
+                            Entfernen
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <p className="obs-hint" style={{ paddingLeft: 0 }}>
+                  <code>plugin.json</code>: id, name, version, type:
+                  &quot;browser&quot;, entry: &quot;index.html&quot;
+                </p>
               </div>
             )}
 

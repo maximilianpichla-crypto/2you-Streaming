@@ -26,6 +26,14 @@ import {
   installAutoUpdateNow,
   setupAutoUpdater,
 } from './autoUpdate'
+import {
+  installPluginFromFolder,
+  installPluginFromZip,
+  listPlugins,
+  openPluginsFolder,
+  removePlugin,
+  setPluginEnabled,
+} from './plugins'
 import { getSystemStats } from './systemStats'
 import { subscribeLoopbackMeter } from './loopbackMeter'
 import type {
@@ -259,6 +267,15 @@ function registerIpc(): void {
   ipcMain.handle('updates:autoStatus', () => getAutoUpdateStatus())
   ipcMain.handle('updates:installNow', () => installAutoUpdateNow())
   ipcMain.handle('system:stats', () => getSystemStats())
+
+  ipcMain.handle('plugins:list', () => listPlugins())
+  ipcMain.handle('plugins:openFolder', () => openPluginsFolder())
+  ipcMain.handle('plugins:installZip', () => installPluginFromZip())
+  ipcMain.handle('plugins:installFolder', () => installPluginFromFolder())
+  ipcMain.handle('plugins:setEnabled', (_e, id: string, enabled: boolean) =>
+    setPluginEnabled(id, enabled),
+  )
+  ipcMain.handle('plugins:remove', (_e, id: string) => removePlugin(id))
 
   const meterUnsubs = new Map<string, () => void>()
   const meterVolumes = new Map<string, number>()

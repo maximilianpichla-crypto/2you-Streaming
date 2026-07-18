@@ -384,7 +384,10 @@ export default function App() {
             <div className="brand-mark">
               2<span>you</span> Streaming
             </div>
-            <div className="brand-tag">Live · Twitch · YouTube · RTMP</div>
+            <div className="brand-tag">
+              Live · Twitch · YouTube · RTMP
+              <span className="brand-credit"> · created by maxxxxxxxxam</span>
+            </div>
           </div>
         </div>
         <div className="topbar-actions">
@@ -681,6 +684,21 @@ export default function App() {
           applyTheme(theme)
           void persistSettings(settings)
           void persistTheme(theme)
+        }}
+        onAddPluginSource={({ name, url }) => {
+          if (!activeScene) return
+          const source = createSource('browser', name)
+          source.settings = {
+            ...source.settings,
+            url,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+          }
+          updateActiveScene((scene) => ({
+            ...scene,
+            sources: [...scene.sources, source],
+          }))
         }}
       />
     </div>

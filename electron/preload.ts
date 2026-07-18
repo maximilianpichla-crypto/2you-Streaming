@@ -76,6 +76,26 @@ const api = {
   getAutoUpdateStatus: (): Promise<import('../electron/autoUpdate').AutoUpdateStatus> =>
     ipcRenderer.invoke('updates:autoStatus'),
   installUpdateNow: (): Promise<boolean> => ipcRenderer.invoke('updates:installNow'),
+  listPlugins: (): Promise<import('../electron/plugins').InstalledPlugin[]> =>
+    ipcRenderer.invoke('plugins:list'),
+  openPluginsFolder: (): Promise<string> => ipcRenderer.invoke('plugins:openFolder'),
+  installPluginZip: (): Promise<{
+    ok: boolean
+    error?: string
+    plugins: import('../electron/plugins').InstalledPlugin[]
+  }> => ipcRenderer.invoke('plugins:installZip'),
+  installPluginFolder: (): Promise<{
+    ok: boolean
+    error?: string
+    plugins: import('../electron/plugins').InstalledPlugin[]
+  }> => ipcRenderer.invoke('plugins:installFolder'),
+  setPluginEnabled: (
+    id: string,
+    enabled: boolean,
+  ): Promise<import('../electron/plugins').InstalledPlugin[]> =>
+    ipcRenderer.invoke('plugins:setEnabled', id, enabled),
+  removePlugin: (id: string): Promise<import('../electron/plugins').InstalledPlugin[]> =>
+    ipcRenderer.invoke('plugins:remove', id),
   onAutoUpdateStatus: (
     callback: (status: import('../electron/autoUpdate').AutoUpdateStatus) => void,
   ): (() => void) => {

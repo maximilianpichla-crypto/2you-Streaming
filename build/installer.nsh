@@ -49,7 +49,7 @@ FunctionEnd
   !define MUI_FINISHPAGE_TITLE_3LINES
   !define MUI_FINISHPAGE_RUN_TEXT "2you Streaming jetzt starten"
   !define MUI_FINISHPAGE_TITLE "Installation abgeschlossen"
-  !define MUI_FINISHPAGE_TEXT "2you Streaming ist bereit.$\r$\n$\r$\nDu kannst Szenen, Audio und Stream-Ziele direkt in der App einrichten. Updates werden künftig automatisch geladen."
+  !define MUI_FINISHPAGE_TEXT "2you Streaming ist bereit.$\r$\n$\r$\nDu kannst Szenen, Audio und Stream-Ziele direkt in der App einrichten. Updates werden künftig automatisch geladen.$\r$\n$\r$\ncreated by maxxxxxxxxam"
 !macroend
 
 ; Auto-Updates von electron-updater kommen mit --updated.
