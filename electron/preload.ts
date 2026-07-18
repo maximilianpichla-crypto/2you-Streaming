@@ -168,6 +168,10 @@ const api = {
     payload: StartStreamPayload,
   ): Promise<{ ok: true } | { ok: false; error: string }> =>
     ipcRenderer.invoke('stream:start', payload),
+  restartStream: (
+    payload: StartStreamPayload,
+  ): Promise<{ ok: true } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('stream:restart', payload),
   stopStream: (): Promise<{ ok: true }> => ipcRenderer.invoke('stream:stop'),
   onStreamStatus: (callback: (status: StreamStatus) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: StreamStatus) => {

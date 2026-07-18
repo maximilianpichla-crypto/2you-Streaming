@@ -406,6 +406,16 @@ function registerIpc(): void {
     }
   })
 
+  ipcMain.handle('stream:restart', async (_e, payload: StartStreamPayload) => {
+    try {
+      await streamer.restart(payload)
+      return { ok: true as const }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false as const, error: message }
+    }
+  })
+
   ipcMain.handle('stream:stop', () => {
     streamer.stop()
     return { ok: true as const }

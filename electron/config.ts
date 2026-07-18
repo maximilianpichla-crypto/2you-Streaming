@@ -14,6 +14,7 @@ import {
   isAudioSource,
   isVisualSource,
   normalizeEncoderSettings,
+  normalizeStreamDelaySeconds,
 } from '../src/shared/types'
 
 /** Config-Schema-Version — nur erhöhen, wenn migrateConfig neue Felder braucht */
@@ -249,6 +250,10 @@ function migrateConfig(config: AppConfig): AppConfig {
       },
       alerts: normalizeAlerts(config.settings?.alerts),
       encoder: normalizeEncoderSettings(config.settings?.encoder),
+      streamDelayEnabled: Boolean(config.settings?.streamDelayEnabled),
+      streamDelaySeconds: normalizeStreamDelaySeconds(
+        config.settings?.streamDelaySeconds ?? defaults.settings.streamDelaySeconds,
+      ),
     },
     theme: isLegacyMidnight
       ? defaultTheme()

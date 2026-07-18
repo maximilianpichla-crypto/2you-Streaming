@@ -314,6 +314,10 @@ export function buildFfmpegArgs(options: {
   const aRate = encoder.audioSampleRate
   const aCh = encoder.audioChannels
   const aLayout = aCh === 1 ? 'mono' : 'stereo'
+  const delaySec = settings.streamDelayEnabled
+    ? Math.max(0, Math.min(120, Math.round(Number(settings.streamDelaySeconds) || 0)))
+    : 0
+  const delayMs = Math.round(delaySec * 1000)
 
   const enabledVisual = scene.sources.filter(
     (s) => s.enabled && isVisualSource(s.type),
@@ -478,7 +482,11 @@ export function buildFfmpegArgs(options: {
     }
   }
 
-  filterParts.push(`[${current}]null[vout]`)
+  filterParts.push(
+    delaySec > 0
+      ? `[${current}]setpts=PTS+${delaySec}/TB[vout]`
+      : `[${current}]null[vout]`,
+  )
 
   type AudioTrack = { index: number; volume: number }
   const audioTracks: AudioTrack[] = []
@@ -543,11 +551,12 @@ export function buildFfmpegArgs(options: {
   }
 
   const aFormat = `aformat=sample_fmts=fltp:sample_rates=${aRate}:channel_layouts=${aLayout}`
+  const audioOut = delaySec > 0 ? 'apre' : 'aout'
 
   if (audioTracks.length === 1) {
     const t = audioTracks[0]
     filterParts.push(
-      `[${t.index}:a]${aFormat},volume=${t.volume}[aout]`,
+      `[${t.index}:a]${aFormat},volume=${t.volume}[${audioOut}]`,
     )
   } else {
     const labels = audioTracks.map((t, idx) => {
@@ -557,8 +566,15 @@ export function buildFfmpegArgs(options: {
       return `[a${idx}]`
     })
     filterParts.push(
-      `${labels.join('')}amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2[aout]`,
+      `${labels.join('')}amix=inputs=${audioTracks.length}:duration=longest:dropout_transition=2[${audioOut}]`,
     )
+  }
+
+  if (delaySec > 0) {
+    // Zuschauer sehen/hören alles delaySec später (wie OBS Stream Delay)
+    const adelay =
+      aCh === 1 ? `${delayMs}` : `${delayMs}|${delayMs}`
+    filterParts.push(`[apre]adelay=${adelay}:all=1[aout]`)
   }
 
   args.push('-filter_complex', filterParts.join(';'))
@@ -588,6 +604,8 @@ export class FfmpegStreamer {
   private process: ChildProcessWithoutNullStreams | null = null
   private captureProcess: ChildProcessWithoutNullStreams | null = null
   private listener: StatusListener | null = null
+  private restarting = false
+  private runId = 0
   private status: StreamStatus = {
     streaming: false,
     startedAt: null,
@@ -625,12 +643,46 @@ export class FfmpegStreamer {
     }
   }
 
-  async start(options: {
+  async restart(options: {
     settings: StreamSettings
     scene: Scene
     audioSources: StreamSource[]
     displayIndex: number
   }): Promise<void> {
+    if (!this.process && !this.status.streaming) {
+      await this.start(options)
+      return
+    }
+    const startedAt = this.status.startedAt ?? Date.now()
+    this.restarting = true
+    this.runId += 1
+    this.stopCapture()
+    const proc = this.process
+    this.process = null
+    if (proc) {
+      try {
+        proc.kill()
+      } catch {
+        /* ignore */
+      }
+      await new Promise((r) => setTimeout(r, 400))
+    }
+    try {
+      await this.start(options, { preserveStartedAt: startedAt })
+    } finally {
+      this.restarting = false
+    }
+  }
+
+  async start(
+    options: {
+      settings: StreamSettings
+      scene: Scene
+      audioSources: StreamSource[]
+      displayIndex: number
+    },
+    startOpts?: { preserveStartedAt?: number },
+  ): Promise<void> {
     if (this.process) {
       throw new Error('Stream läuft bereits')
     }
@@ -648,7 +700,7 @@ export class FfmpegStreamer {
 
     this.setPartial({
       streaming: true,
-      startedAt: Date.now(),
+      startedAt: startOpts?.preserveStartedAt ?? Date.now(),
       bitrateKbps: null,
       fps: null,
       error: null,
@@ -660,6 +712,7 @@ export class FfmpegStreamer {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.process = child
+    const myRunId = this.runId
 
     if (needsLoopback && loopback) {
       const capturePath = getWasapiCapturePath()
@@ -712,6 +765,7 @@ export class FfmpegStreamer {
     child.stderr.on('data', onData)
 
     child.on('error', (err) => {
+      if (myRunId !== this.runId) return
       this.stopCapture()
       this.process = null
       this.setPartial({
@@ -722,6 +776,7 @@ export class FfmpegStreamer {
     })
 
     child.on('close', (code) => {
+      if (myRunId !== this.runId) return
       this.stopCapture()
       this.process = null
       const errored = Boolean(code && code !== 0)
@@ -736,6 +791,8 @@ export class FfmpegStreamer {
   }
 
   stop(): void {
+    this.restarting = false
+    this.runId += 1
     this.stopCapture()
     if (!this.process) {
       this.setPartial({ streaming: false, startedAt: null })

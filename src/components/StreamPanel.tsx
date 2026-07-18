@@ -1,5 +1,5 @@
 import type { StreamSettings, StreamStatus, VideoEncoderId } from '../shared/types'
-import { getEncoderInfo } from '../shared/types'
+import { STREAM_DELAY_PRESETS, getEncoderInfo } from '../shared/types'
 
 interface Props {
   settings: StreamSettings
@@ -9,6 +9,7 @@ interface Props {
   onChange: (settings: StreamSettings) => void
   onStart: () => void
   onStop: () => void
+  onToggleDelay: () => void
   onOpenSettings: (tab?: 'stream' | 'encoder' | 'transition') => void
   embedded?: boolean
 }
@@ -29,11 +30,14 @@ export function StreamPanel({
   onChange,
   onStart,
   onStop,
+  onToggleDelay,
   onOpenSettings,
   embedded = false,
 }: Props) {
   const encoderId = settings.encoder.videoEncoder ?? 'x264'
   const encoderInfo = getEncoderInfo(encoderId)
+  const delayOn = Boolean(settings.streamDelayEnabled)
+  const delaySec = settings.streamDelaySeconds || 10
   const shortLabel =
     encoderId === 'x264'
       ? 'x264'
@@ -51,6 +55,9 @@ export function StreamPanel({
           <div className="label">Status</div>
           <div className="value" style={{ color: status.streaming ? 'var(--live)' : undefined }}>
             {status.streaming ? 'Streaming' : 'Bereit'}
+            {status.streaming && delayOn ? (
+              <span className="delay-badge"> · Delay {delaySec}s</span>
+            ) : null}
           </div>
           <div className="status-grid">
             <div>
@@ -102,6 +109,40 @@ export function StreamPanel({
             onOpenSettings('encoder')
           }}>
             Einstellen
+          </button>
+        </div>
+
+        <div className="delay-row">
+          <label htmlFor="delay-sec">Delay</label>
+          <select
+            id="delay-sec"
+            value={delaySec}
+            disabled={busy}
+            onChange={(e) =>
+              onChange({
+                ...settings,
+                streamDelaySeconds: Number(e.target.value) || 10,
+              })
+            }
+          >
+            {STREAM_DELAY_PRESETS.map((s) => (
+              <option key={s} value={s}>
+                {s} Sekunden
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className={delayOn ? 'danger delay-toggle on' : 'primary delay-toggle'}
+            disabled={busy || !settings.streamKey.trim()}
+            title={
+              status.streaming
+                ? 'Delay live umschalten (kurzer Reconnect)'
+                : 'Delay für den nächsten Stream vorbereiten'
+            }
+            onClick={onToggleDelay}
+          >
+            {delayOn ? `Delay aus (${delaySec}s)` : `Delay an (${delaySec}s)`}
           </button>
         </div>
 

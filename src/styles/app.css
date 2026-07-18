@@ -893,6 +893,33 @@ select:focus {
   flex-wrap: wrap;
 }
 
+.delay-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
+.delay-row label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.delay-row select {
+  min-width: 0;
+}
+
+.delay-toggle {
+  white-space: nowrap;
+}
+
+.delay-badge {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.85em;
+}
+
 .toggle {
   display: inline-flex;
   align-items: center;

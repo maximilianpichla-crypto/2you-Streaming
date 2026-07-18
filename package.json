@@ -1,6 +1,6 @@
 {
   "name": "2you-streaming",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "2you Streaming – desktop streaming app for Twitch and more",
   "main": "dist-electron/main.js",
   "author": "2you Streaming",

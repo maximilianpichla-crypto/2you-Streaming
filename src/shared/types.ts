@@ -340,11 +340,23 @@ export interface StreamSettings {
    * Leer = eingebauter GitHub-Default, sonst lokaler Dev-Feed.
    */
   updateFeedUrl: string
+  /** Stream-Delay aktiv (auch live umschaltbar) */
+  streamDelayEnabled: boolean
+  /** Verzögerung in Sekunden (Zuschauer sehen alles X Sekunden später) */
+  streamDelaySeconds: number
   /** Szenenübergang */
   transition: TransitionSettings
   /** Lokale Alerts (ohne Internet) */
   alerts: AlertsSettings
   encoder: EncoderSettings
+}
+
+export const STREAM_DELAY_PRESETS = [3, 5, 10, 15, 20, 30, 60] as const
+
+export function normalizeStreamDelaySeconds(raw: unknown): number {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return 10
+  return Math.max(1, Math.min(120, Math.round(n)))
 }
 
 export type AlertTypeId = 'follow' | 'subscribe' | 'donation' | 'raid' | 'custom'
@@ -1196,6 +1208,8 @@ export function createDefaultConfig(): AppConfig {
       customRtmpUrl: 'rtmp://',
       channelName: '',
       updateFeedUrl: '', // leer → Electron nutzt DEFAULT_UPDATE_FEED_URL (GitHub)
+      streamDelayEnabled: false,
+      streamDelaySeconds: 10,
       transition: defaultTransition(),
       alerts: defaultAlerts(),
       encoder: defaultEncoderSettings(),

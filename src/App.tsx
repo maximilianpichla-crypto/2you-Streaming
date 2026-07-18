@@ -316,6 +316,33 @@ export default function App() {
     }, 280)
   }
 
+  async function handleToggleDelay() {
+    const nextEnabled = !config.settings.streamDelayEnabled
+    const nextSettings = {
+      ...config.settings,
+      streamDelayEnabled: nextEnabled,
+      streamDelaySeconds: config.settings.streamDelaySeconds || 10,
+    }
+    setConfig((c) => ({ ...c, settings: nextSettings }))
+    await persistSettings(nextSettings)
+
+    if (!status.streaming || !activeScene) return
+
+    setBusy(true)
+    const displaySource = activeScene.sources.find((s) => s.type === 'display' && s.enabled)
+    const displayIndex = displaySource?.deviceId ? Number(displaySource.deviceId) : 0
+    const result = await window.twoYou.restartStream({
+      settings: nextSettings,
+      scene: activeScene,
+      audioSources: config.audioSources ?? [],
+      displayIndex,
+    })
+    setBusy(false)
+    if (!result.ok) {
+      setStatus((s) => ({ ...s, error: result.error }))
+    }
+  }
+
   async function handleStart() {
     if (!activeScene) return
     setBusy(true)
@@ -644,11 +671,40 @@ export default function App() {
                 busy={busy}
                 availableEncoders={availableEncoders}
                 onChange={(settings) => {
+                  const prev = config.settings
                   setConfig((c) => ({ ...c, settings }))
                   void persistSettings(settings)
+                  if (
+                    status.streaming &&
+                    activeScene &&
+                    settings.streamDelayEnabled &&
+                    settings.streamDelaySeconds !== prev.streamDelaySeconds
+                  ) {
+                    setBusy(true)
+                    const displaySource = activeScene.sources.find(
+                      (s) => s.type === 'display' && s.enabled,
+                    )
+                    const displayIndex = displaySource?.deviceId
+                      ? Number(displaySource.deviceId)
+                      : 0
+                    void window.twoYou
+                      .restartStream({
+                        settings,
+                        scene: activeScene,
+                        audioSources: config.audioSources ?? [],
+                        displayIndex,
+                      })
+                      .then((result) => {
+                        setBusy(false)
+                        if (!result.ok) {
+                          setStatus((s) => ({ ...s, error: result.error }))
+                        }
+                      })
+                  }
                 }}
                 onStart={() => void handleStart()}
                 onStop={() => void handleStop()}
+                onToggleDelay={() => void handleToggleDelay()}
                 onOpenSettings={(tab = 'encoder') => {
                   setSettingsCategory(mapTabToCategory(tab))
                   setSettingsOpen(true)
