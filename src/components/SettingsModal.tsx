@@ -195,9 +195,9 @@ export function SettingsModal({
                   />
                 </div>
                 <p className="obs-hint">
-                  Standard: GitHub Raw von{' '}
+                  Standard: jsDelivr → GitHub{' '}
                   <code>maximilianpichla-crypto/2you-Streaming</code>
-                  {' '}→ <code>updates/feed.json</code>. Repo muss öffentlich sein.
+                  {' '}/ <code>updates/feed.json</code>
                 </p>
               </div>
             )}

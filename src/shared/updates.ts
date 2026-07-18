@@ -3,9 +3,9 @@
  * Nutzer-Apps laden diesen Feed (lokal im Dev, remote in Produktion).
  */
 
-/** Standard-Update-Feed (öffentliches GitHub-Repo via jsDelivr) */
+/** Standard-Update-Feed (öffentliches GitHub-Repo) */
 export const DEFAULT_UPDATE_FEED_URL =
-  'https://cdn.jsdelivr.net/gh/maximilianpichla-crypto/2you-Streaming@main/updates/feed.json'
+  'https://raw.githubusercontent.com/maximilianpichla-crypto/2you-Streaming/main/updates/feed.json'
 
 export const UPDATE_REPO_URL =
   'https://github.com/maximilianpichla-crypto/2you-Streaming.git'
