@@ -6,7 +6,7 @@ import type {
   StreamSource,
   WindowInfo,
 } from '../shared/types'
-import { sourceLabel } from '../shared/types'
+import { sourceLabel, isVisualSource } from '../shared/types'
 import { AddSourceModal } from './AddSourceModal'
 import { AudioLevelMeter, isAudioSourceType } from './AudioLevelMeter'
 
@@ -132,7 +132,7 @@ function SourceEditor({
     )
   }
 
-  if (source.type === 'microphone' || source.type === 'app_audio') {
+  if (source.type === 'microphone') {
     return (
       <div style={{ marginTop: '0.45rem' }} onClick={(e) => e.stopPropagation()}>
         <select
@@ -146,7 +146,7 @@ function SourceEditor({
             })
           }}
         >
-          <option value="">Gerät wählen…</option>
+          <option value="">Mikrofon wählen…</option>
           {mics.map((m) => (
             <option key={m.deviceId} value={m.deviceId}>
               {m.label || m.deviceId}
@@ -171,34 +171,68 @@ function SourceEditor({
   if (source.type === 'desktop_audio') {
     return (
       <div style={{ marginTop: '0.45rem' }} onClick={(e) => e.stopPropagation()}>
+        <p className="obs-hint" style={{ margin: '0 0 0.35rem' }}>
+          Nimmt wiedergegebenen PC-Ton auf (WASAPI-Loopback) — nicht das Mikrofon.
+        </p>
+        <AudioLevelMeter
+          mode="loopback"
+          processId={null}
+          processName={null}
+          deviceLabel="Desktop-Audio"
+          enabled={source.enabled}
+          volume={settings.volume ?? 100}
+          onVolumeChange={(volume) =>
+            onUpdateSource(source.id, {
+              settings: { ...settings, volume },
+            })
+          }
+        />
+      </div>
+    )
+  }
+
+  if (source.type === 'app_audio') {
+    const apps = windows.filter((w) => w.processId && w.name.trim())
+    const selectedPid = String(settings.processId ?? source.deviceId ?? '')
+    return (
+      <div style={{ marginTop: '0.45rem' }} onClick={(e) => e.stopPropagation()}>
         <select
-          value={source.deviceId ?? ''}
+          value={selectedPid}
           onChange={(e) => {
-            const sp = speakers.find((m) => m.deviceId === e.target.value)
+            const win = apps.find((w) => String(w.processId) === e.target.value)
+            const pid = Number.parseInt(e.target.value, 10)
             onUpdateSource(source.id, {
               deviceId: e.target.value,
-              deviceLabel: sp?.label,
-              name: sp?.label || 'Audio-Ausgabeaufnahme',
+              deviceLabel: win?.name,
+              name: win?.name || 'Anwendungsaudio',
+              settings: {
+                ...settings,
+                processId: Number.isFinite(pid) ? pid : undefined,
+                processName: win?.processName,
+                volume: settings.volume ?? 100,
+              },
             })
           }}
         >
-          <option value="">Ausgabegerät / Loopback wählen…</option>
-          {speakers.map((m) => (
-            <option key={m.deviceId} value={m.deviceId}>
-              {m.label || m.deviceId}
+          <option value="">Anwendung / Fenster wählen…</option>
+          {apps.map((w) => (
+            <option key={`${w.processId}-${w.id}`} value={String(w.processId)}>
+              {w.name}
+              {w.processName ? ` (${w.processName})` : ''}
             </option>
           ))}
-          {speakers.length === 0 &&
-            mics.map((m) => (
-              <option key={m.deviceId} value={m.deviceId}>
-                {m.label || m.deviceId}
-              </option>
-            ))}
         </select>
+        {apps.length === 0 && (
+          <p className="obs-hint" style={{ marginTop: '0.35rem' }}>
+            Keine Fenster mit Prozess-ID gefunden. App öffnen und Quellen neu laden.
+          </p>
+        )}
         <AudioLevelMeter
-          deviceId={source.deviceId}
-          deviceLabel={source.deviceLabel}
-          enabled={source.enabled}
+          mode="loopback"
+          processId={settings.processId ?? null}
+          processName={settings.processName ?? null}
+          deviceLabel={source.deviceLabel ?? 'App-Audio'}
+          enabled={source.enabled && Boolean(settings.processId || settings.processName)}
           volume={settings.volume ?? 100}
           onVolumeChange={(volume) =>
             onUpdateSource(source.id, {
@@ -409,11 +443,12 @@ export function SourcesPanel({
   embedded = false,
 }: Props) {
   const [modalOpen, setModalOpen] = useState(false)
+  const visualSources = scene?.sources.filter((s) => isVisualSource(s.type)) ?? []
 
   if (!scene) {
     return (
       <div className={`panel ${embedded ? 'embedded' : ''}`}>
-        {!embedded && <div className="panel-header">Quellen</div>}
+        {!embedded && <div className="panel-header">Video-Quellen</div>}
         <div className="panel-body">Keine Szene ausgewählt</div>
       </div>
     )
@@ -424,10 +459,13 @@ export function SourcesPanel({
       className={`panel ${embedded ? 'embedded' : ''}`}
       style={embedded ? undefined : { borderTop: '1px solid var(--border)' }}
     >
-      {!embedded && <div className="panel-header">Quellen — {scene.name}</div>}
+      {!embedded && <div className="panel-header">Video — {scene.name}</div>}
       <div className="panel-body">
+        <p className="obs-hint" style={{ marginTop: 0 }}>
+          Nur Video/Bild — Audio liegt im Panel „Audio“.
+        </p>
         <div className="list">
-          {scene.sources.map((source, index) => (
+          {visualSources.map((source, index) => (
             <div
               key={source.id}
               className={`list-item ${selectedSourceId === source.id ? 'active' : ''}`}
@@ -454,9 +492,32 @@ export function SourcesPanel({
               {isAudioSourceType(source.type) && selectedSourceId !== source.id && (
                 <AudioLevelMeter
                   compact
+                  mode={
+                    source.type === 'desktop_audio' || source.type === 'app_audio'
+                      ? 'loopback'
+                      : 'device'
+                  }
+                  processId={
+                    source.type === 'app_audio'
+                      ? (source.settings?.processId ?? null)
+                      : source.type === 'desktop_audio'
+                        ? null
+                        : undefined
+                  }
+                  processName={
+                    source.type === 'app_audio'
+                      ? (source.settings?.processName ?? null)
+                      : source.type === 'desktop_audio'
+                        ? null
+                        : undefined
+                  }
                   deviceId={source.deviceId}
                   deviceLabel={source.deviceLabel}
-                  enabled={source.enabled}
+                  enabled={
+                    source.enabled &&
+                    (source.type !== 'app_audio' ||
+                      Boolean(source.settings?.processId || source.settings?.processName))
+                  }
                   volume={source.settings?.volume ?? 100}
                 />
               )}
@@ -488,7 +549,7 @@ export function SourcesPanel({
                     <button
                       type="button"
                       className="ghost"
-                      disabled={index === scene.sources.length - 1}
+                      disabled={index === visualSources.length - 1}
                       onClick={() => onMove(source.id, 1)}
                     >
                       ↓
@@ -507,10 +568,10 @@ export function SourcesPanel({
           ))}
         </div>
 
-        <div className="section-title">Quelle hinzufügen</div>
+        <div className="section-title">Video-Quelle hinzufügen</div>
         <div className="source-actions">
           <button type="button" className="primary" onClick={() => setModalOpen(true)}>
-            + Quelle (wie OBS)
+            + Video-Quelle
           </button>
           <button
             type="button"
@@ -534,8 +595,12 @@ export function SourcesPanel({
 
       <AddSourceModal
         open={modalOpen}
+        mode="visual"
         onClose={() => setModalOpen(false)}
-        onPick={onAddSource}
+        onPick={(type) => {
+          onAddSource(type)
+          setModalOpen(false)
+        }}
       />
     </div>
   )

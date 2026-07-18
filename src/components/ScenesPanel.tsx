@@ -1,4 +1,5 @@
 import type { Scene } from '../shared/types'
+import { isVisualSource } from '../shared/types'
 
 interface Props {
   scenes: Scene[]
@@ -36,7 +37,9 @@ export function ScenesPanel({
               }}
             >
               {scene.name}
-              <span className="meta">{scene.sources.length}</span>
+              <span className="meta">
+                {scene.sources.filter((s) => isVisualSource(s.type)).length}
+              </span>
             </button>
           ))}
         </div>

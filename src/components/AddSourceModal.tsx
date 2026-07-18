@@ -5,6 +5,8 @@ interface Props {
   open: boolean
   onClose: () => void
   onPick: (type: SourceType) => void
+  /** visual = Szene (ohne Audio), audio = nur Audio-Typen */
+  mode?: 'all' | 'visual' | 'audio'
 }
 
 const CATEGORIES: { id: 'video' | 'audio' | 'media' | 'other'; label: string }[] = [
@@ -14,13 +16,26 @@ const CATEGORIES: { id: 'video' | 'audio' | 'media' | 'other'; label: string }[]
   { id: 'other', label: 'Sonstiges' },
 ]
 
-export function AddSourceModal({ open, onClose, onPick }: Props) {
+export function AddSourceModal({
+  open,
+  onClose,
+  onPick,
+  mode = 'all',
+}: Props) {
   const [filter, setFilter] = useState('')
   const [category, setCategory] = useState<(typeof CATEGORIES)[number]['id'] | 'all'>('all')
+
+  const allowedCategories = CATEGORIES.filter((c) => {
+    if (mode === 'visual') return c.id !== 'audio'
+    if (mode === 'audio') return c.id === 'audio'
+    return true
+  })
 
   const items = useMemo(() => {
     const q = filter.trim().toLowerCase()
     return OBS_SOURCE_TYPES.filter((s) => {
+      if (mode === 'visual' && s.category === 'audio') return false
+      if (mode === 'audio' && s.category !== 'audio') return false
       if (category !== 'all' && s.category !== category) return false
       if (!q) return true
       return (
@@ -28,7 +43,7 @@ export function AddSourceModal({ open, onClose, onPick }: Props) {
         s.description.toLowerCase().includes(q)
       )
     })
-  }, [filter, category])
+  }, [filter, category, mode])
 
   if (!open) return null
 
@@ -42,7 +57,13 @@ export function AddSourceModal({ open, onClose, onPick }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
-          <h2>Quelle hinzufügen</h2>
+          <h2>
+            {mode === 'audio'
+              ? 'Audio-Quelle hinzufügen'
+              : mode === 'visual'
+                ? 'Video-Quelle hinzufügen'
+                : 'Quelle hinzufügen'}
+          </h2>
           <button type="button" className="ghost" onClick={onClose}>
             Schließen
           </button>
@@ -63,7 +84,7 @@ export function AddSourceModal({ open, onClose, onPick }: Props) {
             >
               Alle
             </button>
-            {CATEGORIES.map((c) => (
+            {allowedCategories.map((c) => (
               <button
                 key={c.id}
                 type="button"

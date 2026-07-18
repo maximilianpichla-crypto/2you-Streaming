@@ -1,10 +1,10 @@
 {
-  "version": "1.0.0",
-  "publishedAt": "2026-07-18T17:29:51.741Z",
+  "version": "1.0.1",
+  "publishedAt": "2026-07-18T18:26:40.000Z",
   "minVersion": null,
-  "downloadUrl": "",
-  "title": "Update-Kanal aktiv",
-  "body": "GitHub-Feed funktioniert. Nachrichten von hier erreichen dich jetzt.",
-  "level": "important",
+  "downloadUrl": "https://github.com/maximilianpichla-crypto/2you-Streaming/releases/download/v1.0.1/2you-Streaming-Setup-1.0.1.exe",
+  "title": "Update 1.0.1",
+  "body": "Neu: Ausgabe Fortgeschritten, Alert Drag&Drop, rahmenloses Fenster, Audio-Panel. Einstellungen bleiben erhalten.",
+  "level": "update",
   "announcements": []
 }

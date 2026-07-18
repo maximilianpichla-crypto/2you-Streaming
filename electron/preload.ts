@@ -37,6 +37,10 @@ const api = {
     ipcRenderer.invoke('config:saveLayout', layout),
   saveScenes: (scenes: Scene[], activeSceneId: string): Promise<AppConfig> =>
     ipcRenderer.invoke('config:saveScenes', scenes, activeSceneId),
+  saveAudioSources: (
+    audioSources: import('../src/shared/types').StreamSource[],
+  ): Promise<AppConfig> =>
+    ipcRenderer.invoke('config:saveAudioSources', audioSources),
   saveAll: (config: AppConfig): Promise<AppConfig> =>
     ipcRenderer.invoke('config:saveAll', config),
   getDisplays: (): Promise<DisplayInfo[]> => ipcRenderer.invoke('devices:displays'),
@@ -67,6 +71,38 @@ const api = {
     ipcRenderer.invoke('updates:dismiss', ids),
   openUpdateDownload: (url?: string): Promise<boolean> =>
     ipcRenderer.invoke('updates:openDownload', url),
+  getSystemStats: (): Promise<{
+    cpuPercent: number | null
+    cpuTempC: number | null
+    ramPercent: number | null
+    ramUsedGb: number | null
+    ramTotalGb: number | null
+    gpuPercent: number | null
+    gpuTempC: number | null
+    gpuName: string | null
+  }> => ipcRenderer.invoke('system:stats'),
+  startLoopbackMeter: (payload: {
+    id: string
+    processId?: number | null
+    processName?: string | null
+    volume?: number
+  }): Promise<{ ok: true }> => ipcRenderer.invoke('audio:meterStart', payload),
+  setLoopbackMeterVolume: (payload: {
+    id: string
+    volume: number
+  }): Promise<{ ok: true }> => ipcRenderer.invoke('audio:meterVolume', payload),
+  stopLoopbackMeter: (id: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('audio:meterStop', id),
+  onLoopbackMeterLevel: (
+    callback: (payload: { id: string; level: number; peak: number }) => void,
+  ): (() => void) => {
+    const listener = (
+      _e: Electron.IpcRendererEvent,
+      payload: { id: string; level: number; peak: number },
+    ) => callback(payload)
+    ipcRenderer.on('audio:meterLevel', listener)
+    return () => ipcRenderer.removeListener('audio:meterLevel', listener)
+  },
   onPickHotkey: (
     callback: (payload: { kind: 'window' | 'game' }) => void,
   ): (() => void) => {
@@ -124,6 +160,10 @@ const api = {
     ipcRenderer.on('chat:message', listener)
     return () => ipcRenderer.removeListener('chat:message', listener)
   },
+  minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
+  maximizeWindow: (): Promise<boolean> => ipcRenderer.invoke('window:maximize'),
+  closeWindow: (): Promise<void> => ipcRenderer.invoke('window:close'),
+  isWindowMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
 }
 
 contextBridge.exposeInMainWorld('twoYou', api)

@@ -54,7 +54,8 @@ function readLocalFeed(): UpdateFeed | null {
 
 async function fetchRemoteFeed(url: string): Promise<UpdateFeed | null> {
   try {
-    const res = await fetch(url, {
+    const bust = url.includes('?') ? `&_=${Date.now()}` : `?_=${Date.now()}`
+    const res = await fetch(url + bust, {
       headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
       signal: AbortSignal.timeout(12000),
     })

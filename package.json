@@ -1,6 +1,6 @@
 {
   "name": "2you-streaming",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "2you Streaming – desktop streaming app for Twitch and more",
   "main": "dist-electron/main.js",
   "author": "2you Streaming",
@@ -10,7 +10,8 @@
     "start": "vite",
     "dev": "vite",
     "build": "vite build",
-    "electron:build": "npm run build && electron-builder",
+    "electron:build": "npm run build && electron-builder --win nsis",
+    "release": "node scripts/release-installer.cjs",
     "push-update": "node scripts/push-update.cjs",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.js"
   },
@@ -36,7 +37,7 @@
     "appId": "com.2you.streaming",
     "productName": "2you Streaming",
     "directories": {
-      "output": "release"
+      "output": "release-out"
     },
     "files": [
       "dist/**/*",
@@ -47,7 +48,8 @@
         "from": "resources/ffmpeg",
         "to": "ffmpeg",
         "filter": [
-          "**/*"
+          "ffmpeg.exe",
+          "*.dll"
         ]
       },
       {
@@ -56,12 +58,37 @@
         "filter": [
           "feed.json"
         ]
+      },
+      {
+        "from": "resources/wasapi-capture",
+        "to": "wasapi-capture",
+        "filter": [
+          "audio_capture.exe",
+          "*.dll"
+        ]
       }
     ],
     "win": {
       "target": [
         "nsis"
-      ]
+      ],
+      "artifactName": "2you-Streaming-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "2you Streaming",
+      "deleteAppDataOnUninstall": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "installerLanguages": [
+        "de_DE",
+        "en_US"
+      ],
+      "language": "1031",
+      "displayLanguageSelector": false
     }
   },
   "allowScripts": {

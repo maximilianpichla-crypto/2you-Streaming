@@ -42,6 +42,10 @@ export interface SourceSettings {
   windowTitle?: string
   /** Audio-Lautstärke 0–100 (Mikrofon / Desktop / App) */
   volume?: number
+  /** Windows-Prozess-ID für Anwendungsaudio (WASAPI process loopback) */
+  processId?: number
+  /** Prozessname (z. B. Spotify) — alle PIDs dieses Namens werden erfasst */
+  processName?: string
 }
 
 /** Position & Größe einer Quelle auf der Szenen-Fläche (0–100 %) */
@@ -89,6 +93,16 @@ export function isVisualSource(type: SourceType): boolean {
   return VISUAL_SOURCE_TYPES.includes(type)
 }
 
+export const AUDIO_SOURCE_TYPES: SourceType[] = [
+  'microphone',
+  'desktop_audio',
+  'app_audio',
+]
+
+export function isAudioSource(type: SourceType): boolean {
+  return (AUDIO_SOURCE_TYPES as SourceType[]).includes(type)
+}
+
 export function defaultTransformForType(type: SourceType): SourceTransform {
   switch (type) {
     case 'image':
@@ -131,6 +145,11 @@ export function withSourceTransform(source: StreamSource): StreamSource {
 
 export type VideoEncoderId = 'x264' | 'nvenc' | 'amf' | 'qsv'
 
+export type OutputMode = 'simple' | 'advanced'
+export type RateControlId = 'cbr' | 'vbr' | 'crf'
+export type H264Profile = 'baseline' | 'main' | 'high'
+export type AudioSampleRate = 44100 | 48000
+
 export interface VideoEncoderInfo {
   id: VideoEncoderId
   label: string
@@ -154,6 +173,7 @@ export const VIDEO_ENCODERS: VideoEncoderInfo[] = [
       { id: 'faster', label: 'faster' },
       { id: 'fast', label: 'fast' },
       { id: 'medium', label: 'medium' },
+      { id: 'slow', label: 'slow' },
     ],
   },
   {
@@ -203,14 +223,110 @@ export function getEncoderInfo(id: VideoEncoderId): VideoEncoderInfo {
   return VIDEO_ENCODERS.find((e) => e.id === id) ?? VIDEO_ENCODERS[0]
 }
 
+export const OUTPUT_RESOLUTIONS = [
+  '2560x1440',
+  '1920x1080',
+  '1600x900',
+  '1280x720',
+  '854x480',
+] as const
+
+export const OUTPUT_FPS_OPTIONS = [24, 25, 30, 48, 50, 60] as const
+
 export interface EncoderSettings {
   videoEncoder: VideoEncoderId
   /** Encoder-spezifisches Preset (z. B. veryfast, p4, speed) */
   preset: string
-  resolution: '1920x1080' | '1280x720'
-  fps: 30 | 60
+  /** z. B. 1920x1080 — auch eigene Werte erlaubt */
+  resolution: string
+  fps: number
   videoBitrate: number
   audioBitrate: number
+  /** Einfach = wenige Felder, Fortgeschritten = volle Kontrolle */
+  outputMode: OutputMode
+  rateControl: RateControlId
+  /** Qualität 0–51 (niedriger = besser), bei CRF */
+  crf: number
+  /** Keyframe-Intervall in Sekunden */
+  keyframeIntervalSec: number
+  profile: H264Profile
+  bframes: number
+  /** VBV-Puffer als Vielfaches der Bitrate */
+  bufsizeMultiplier: number
+  /** Encoder-Tune: auto | none | zerolatency | ll | hq */
+  tune: string
+  audioSampleRate: AudioSampleRate
+  audioChannels: 1 | 2
+}
+
+export function defaultEncoderSettings(): EncoderSettings {
+  return {
+    videoEncoder: 'x264',
+    preset: 'veryfast',
+    resolution: '1920x1080',
+    fps: 30,
+    videoBitrate: 4500,
+    audioBitrate: 160,
+    outputMode: 'simple',
+    rateControl: 'cbr',
+    crf: 23,
+    keyframeIntervalSec: 2,
+    profile: 'high',
+    bframes: 2,
+    bufsizeMultiplier: 2,
+    tune: 'auto',
+    audioSampleRate: 48000,
+    audioChannels: 2,
+  }
+}
+
+export function normalizeEncoderSettings(
+  raw?: Partial<EncoderSettings> | null,
+): EncoderSettings {
+  const d = defaultEncoderSettings()
+  const e = { ...d, ...(raw ?? {}) }
+  const fps = Number(e.fps)
+  const keySec = Number(e.keyframeIntervalSec)
+  const crf = Number(e.crf)
+  const bframes = Number(e.bframes)
+  const bufMul = Number(e.bufsizeMultiplier)
+  const res =
+    typeof e.resolution === 'string' && /^\d{2,5}x\d{2,5}$/.test(e.resolution)
+      ? e.resolution
+      : d.resolution
+
+  return {
+    videoEncoder: (['x264', 'nvenc', 'amf', 'qsv'] as VideoEncoderId[]).includes(
+      e.videoEncoder as VideoEncoderId,
+    )
+      ? (e.videoEncoder as VideoEncoderId)
+      : d.videoEncoder,
+    preset: String(e.preset || d.preset),
+    resolution: res,
+    fps: Number.isFinite(fps) && fps >= 1 && fps <= 120 ? Math.round(fps) : d.fps,
+    videoBitrate: Math.max(200, Math.min(50000, Number(e.videoBitrate) || d.videoBitrate)),
+    audioBitrate: Math.max(32, Math.min(512, Number(e.audioBitrate) || d.audioBitrate)),
+    outputMode: e.outputMode === 'advanced' ? 'advanced' : 'simple',
+    rateControl:
+      e.rateControl === 'vbr' || e.rateControl === 'crf' ? e.rateControl : 'cbr',
+    crf: Number.isFinite(crf) ? Math.max(0, Math.min(51, Math.round(crf))) : d.crf,
+    keyframeIntervalSec: Number.isFinite(keySec)
+      ? Math.max(0.5, Math.min(10, keySec))
+      : d.keyframeIntervalSec,
+    profile:
+      e.profile === 'baseline' || e.profile === 'main' || e.profile === 'high'
+        ? e.profile
+        : d.profile,
+    bframes: Number.isFinite(bframes)
+      ? Math.max(0, Math.min(16, Math.round(bframes)))
+      : d.bframes,
+    bufsizeMultiplier: Number.isFinite(bufMul)
+      ? Math.max(0.5, Math.min(8, bufMul))
+      : d.bufsizeMultiplier,
+    tune: String(e.tune || d.tune),
+    audioSampleRate: e.audioSampleRate === 44100 ? 44100 : 48000,
+    audioChannels: e.audioChannels === 1 ? 1 : 2,
+  }
 }
 
 export interface StreamSettings {
@@ -692,11 +808,21 @@ export interface AppConfig {
   theme: ThemeColors
   scenes: Scene[]
   activeSceneId: string
+  /**
+   * Globale Audio-Quellen (nicht an Szenen gebunden) —
+   * Mikrofon, Desktop-, Anwendungsaudio.
+   */
+  audioSources: StreamSource[]
   /** Frei angeordnete UI-Panels */
   layout?: UiLayout
+  /**
+   * Zuletzt gelaufene App-Version (package.json).
+   * Beim Update werden Szenen/Quellen/Einstellungen beibehalten.
+   */
+  lastAppVersion?: string
 }
 
-export type PanelId = 'scenes' | 'sources' | 'preview' | 'stream' | 'chat'
+export type PanelId = 'scenes' | 'sources' | 'audio' | 'preview' | 'stream' | 'chat'
 
 export interface UiPanelSlot {
   id: PanelId
@@ -717,7 +843,8 @@ export interface UiLayout {
 
 export const PANEL_LABELS: Record<PanelId, string> = {
   scenes: 'Szenen',
-  sources: 'Quellen',
+  sources: 'Video-Quellen',
+  audio: 'Audio',
   preview: 'Vorschau',
   stream: 'Stream',
   chat: 'Chat',
@@ -726,6 +853,7 @@ export const PANEL_LABELS: Record<PanelId, string> = {
 export const ALL_PANEL_IDS: PanelId[] = [
   'scenes',
   'sources',
+  'audio',
   'preview',
   'stream',
   'chat',
@@ -738,21 +866,22 @@ export function defaultUiLayout(): UiLayout {
         id: 'col-left',
         widthPercent: 20,
         panels: [
-          { id: 'scenes', heightPercent: 38 },
-          { id: 'sources', heightPercent: 62 },
+          { id: 'scenes', heightPercent: 28 },
+          { id: 'sources', heightPercent: 40 },
+          { id: 'audio', heightPercent: 32 },
         ],
       },
       {
         id: 'col-center',
-        widthPercent: 52,
+        widthPercent: 55,
         panels: [{ id: 'preview', heightPercent: 100 }],
       },
       {
         id: 'col-right',
-        widthPercent: 28,
+        widthPercent: 25,
         panels: [
-          { id: 'stream', heightPercent: 42 },
-          { id: 'chat', heightPercent: 58 },
+          { id: 'stream', heightPercent: 45 },
+          { id: 'chat', heightPercent: 55 },
         ],
       },
     ],
@@ -827,6 +956,9 @@ export interface DisplayInfo {
 export interface WindowInfo {
   id: string
   name: string
+  /** Windows PID (für Anwendungsaudio) */
+  processId?: number
+  processName?: string
 }
 
 export interface MediaDeviceInfoLite {
@@ -847,6 +979,8 @@ export interface StreamStatus {
 export interface StartStreamPayload {
   settings: StreamSettings
   scene: Scene
+  /** Globale Audio-Quellen für den Mix */
+  audioSources: StreamSource[]
   displayIndex: number
 }
 
@@ -915,14 +1049,14 @@ export const OBS_SOURCE_TYPES: SourceTypeInfo[] = [
   },
   {
     type: 'desktop_audio',
-    label: 'Audio-Ausgabeaufnahme',
-    description: 'Desktop- / Systemton',
+    label: 'Desktop-Audio',
+    description: 'Was der PC wiedergibt (System-Loopback)',
     category: 'audio',
   },
   {
     type: 'app_audio',
     label: 'Anwendungsaudioaufnahme',
-    description: 'Audio einer bestimmten App',
+    description: 'Ton einer einzelnen App / eines Fensters',
     category: 'audio',
   },
   {
@@ -1055,7 +1189,7 @@ export function resolveRtmpUrl(settings: StreamSettings): string {
 export function createDefaultConfig(): AppConfig {
   const sceneId = 'scene-main'
   return {
-    version: 2,
+    version: 3,
     settings: {
       platform: 'twitch',
       streamKey: '',
@@ -1064,14 +1198,7 @@ export function createDefaultConfig(): AppConfig {
       updateFeedUrl: '', // leer → Electron nutzt DEFAULT_UPDATE_FEED_URL (GitHub)
       transition: defaultTransition(),
       alerts: defaultAlerts(),
-      encoder: {
-        videoEncoder: 'x264',
-        preset: 'veryfast',
-        resolution: '1920x1080',
-        fps: 30,
-        videoBitrate: 4500,
-        audioBitrate: 160,
-      },
+      encoder: defaultEncoderSettings(),
     },
     theme: defaultTheme(),
     scenes: [
@@ -1088,24 +1215,26 @@ export function createDefaultConfig(): AppConfig {
             deviceLabel: 'Monitor 1',
             settings: {},
           }),
-          withSourceTransform({
-            id: 'src-mic',
-            name: 'Audio-Eingabeaufnahme',
-            type: 'microphone',
-            enabled: true,
-            settings: { volume: 100 },
-          }),
-          withSourceTransform({
-            id: 'src-desktop-audio',
-            name: 'Audio-Ausgabeaufnahme',
-            type: 'desktop_audio',
-            enabled: false,
-            settings: { volume: 100 },
-          }),
         ],
       },
     ],
     activeSceneId: sceneId,
+    audioSources: [
+      withSourceTransform({
+        id: 'src-mic',
+        name: 'Mikrofon',
+        type: 'microphone',
+        enabled: true,
+        settings: { volume: 100 },
+      }),
+      withSourceTransform({
+        id: 'src-desktop-audio',
+        name: 'Desktop-Audio',
+        type: 'desktop_audio',
+        enabled: false,
+        settings: { volume: 100 },
+      }),
+    ],
     layout: defaultUiLayout(),
   }
 }

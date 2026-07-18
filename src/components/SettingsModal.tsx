@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type {
+  EncoderSettings,
   PlatformId,
   StreamSettings,
   ThemeColors,
@@ -7,6 +8,8 @@ import type {
   VideoEncoderId,
 } from '../shared/types'
 import {
+  OUTPUT_FPS_OPTIONS,
+  OUTPUT_RESOLUTIONS,
   PLATFORM_PRESETS,
   THEME_COLOR_FIELDS,
   THEME_PRESETS,
@@ -14,6 +17,7 @@ import {
   VIDEO_ENCODERS,
   defaultAlerts,
   normalizeAlerts,
+  normalizeEncoderSettings,
   defaultTheme,
   getEncoderInfo,
   type TransitionId,
@@ -87,6 +91,7 @@ export function SettingsModal({
     setCategory(initialCategory)
     setDraftSettings({
       ...settings,
+      encoder: normalizeEncoderSettings(settings.encoder),
       alerts: normalizeAlerts(settings.alerts ?? defaultAlerts()),
     })
     setDraftTheme(theme)
@@ -95,8 +100,10 @@ export function SettingsModal({
 
   if (!open) return null
 
-  const encoderId = draftSettings.encoder.videoEncoder ?? 'x264'
+  const encoder = normalizeEncoderSettings(draftSettings.encoder)
+  const encoderId = encoder.videoEncoder
   const encoderInfo = getEncoderInfo(encoderId)
+  const advanced = encoder.outputMode === 'advanced'
   const selectable = VIDEO_ENCODERS.filter(
     (e) => availableEncoders.includes(e.id) || e.id === 'x264',
   )
@@ -106,19 +113,34 @@ export function SettingsModal({
     setDirty(true)
   }
 
+  function patchEncoder(partial: Partial<EncoderSettings>) {
+    patchSettings({
+      ...draftSettings,
+      encoder: normalizeEncoderSettings({
+        ...draftSettings.encoder,
+        ...partial,
+      }),
+    })
+  }
+
   function patchTheme(next: ThemeColors) {
     setDraftTheme(next)
     setDirty(true)
   }
 
   function handleApply() {
-    onApply({ settings: draftSettings, theme: draftTheme })
+    onApply({
+      settings: {
+        ...draftSettings,
+        encoder: normalizeEncoderSettings(draftSettings.encoder),
+      },
+      theme: draftTheme,
+    })
     setDirty(false)
   }
 
   function handleOk() {
-    onApply({ settings: draftSettings, theme: draftTheme })
-    setDirty(false)
+    handleApply()
     onClose()
   }
 
@@ -195,7 +217,7 @@ export function SettingsModal({
                   />
                 </div>
                 <p className="obs-hint">
-                  Standard: jsDelivr → GitHub{' '}
+                  Standard: GitHub Raw →{' '}
                   <code>maximilianpichla-crypto/2you-Streaming</code>
                   {' '}/ <code>updates/feed.json</code>
                 </p>
@@ -273,6 +295,29 @@ export function SettingsModal({
             {category === 'output' && (
               <div className="obs-form">
                 <div className="obs-row">
+                  <label htmlFor="obs-out-mode">Ausgabemodus</label>
+                  <select
+                    id="obs-out-mode"
+                    value={encoder.outputMode}
+                    disabled={streaming}
+                    onChange={(e) =>
+                      patchEncoder({
+                        outputMode:
+                          e.target.value === 'advanced' ? 'advanced' : 'simple',
+                      })
+                    }
+                  >
+                    <option value="simple">Einfach</option>
+                    <option value="advanced">Fortgeschritten</option>
+                  </select>
+                </div>
+                <p className="obs-hint">
+                  {advanced
+                    ? 'Volle Kontrolle über Rate Control, Keyframes, Profil und mehr.'
+                    : 'Wenige Einstellungen — ideal für den schnellen Start.'}
+                </p>
+
+                <div className="obs-row">
                   <label htmlFor="obs-venc">Video-Encoder</label>
                   <select
                     id="obs-venc"
@@ -281,13 +326,9 @@ export function SettingsModal({
                     onChange={(e) => {
                       const id = e.target.value as VideoEncoderId
                       const info = getEncoderInfo(id)
-                      patchSettings({
-                        ...draftSettings,
-                        encoder: {
-                          ...draftSettings.encoder,
-                          videoEncoder: id,
-                          preset: info.defaultPreset,
-                        },
+                      patchEncoder({
+                        videoEncoder: id,
+                        preset: info.defaultPreset,
                       })
                     }}
                   >
@@ -312,22 +353,12 @@ export function SettingsModal({
                   <select
                     id="obs-preset"
                     value={
-                      encoderInfo.presets.some(
-                        (p) => p.id === draftSettings.encoder.preset,
-                      )
-                        ? draftSettings.encoder.preset
+                      encoderInfo.presets.some((p) => p.id === encoder.preset)
+                        ? encoder.preset
                         : encoderInfo.defaultPreset
                     }
                     disabled={streaming}
-                    onChange={(e) =>
-                      patchSettings({
-                        ...draftSettings,
-                        encoder: {
-                          ...draftSettings.encoder,
-                          preset: e.target.value,
-                        },
-                      })
-                    }
+                    onChange={(e) => patchEncoder({ preset: e.target.value })}
                   >
                     {encoderInfo.presets.map((p) => (
                       <option key={p.id} value={p.id}>
@@ -337,30 +368,174 @@ export function SettingsModal({
                   </select>
                 </div>
 
-                <div className="obs-row">
-                  <label htmlFor="obs-vbr">Videobitrate</label>
-                  <div className="obs-inline">
-                    <input
-                      id="obs-vbr"
-                      type="number"
-                      min={500}
-                      max={12000}
-                      step={100}
-                      value={draftSettings.encoder.videoBitrate}
+                {advanced && (
+                  <div className="obs-row">
+                    <label htmlFor="obs-rc">Rate Control</label>
+                    <select
+                      id="obs-rc"
+                      value={encoder.rateControl}
                       disabled={streaming}
                       onChange={(e) =>
-                        patchSettings({
-                          ...draftSettings,
-                          encoder: {
-                            ...draftSettings.encoder,
-                            videoBitrate: Number(e.target.value) || 4500,
-                          },
+                        patchEncoder({
+                          rateControl: e.target.value as EncoderSettings['rateControl'],
                         })
                       }
-                    />
-                    <span>Kbps</span>
+                    >
+                      <option value="cbr">CBR (konstant, empfohlen für Stream)</option>
+                      <option value="vbr">VBR (variabel)</option>
+                      <option value="crf">CRF / CQP (Qualität)</option>
+                    </select>
                   </div>
-                </div>
+                )}
+
+                {encoder.rateControl === 'crf' && advanced ? (
+                  <div className="obs-row">
+                    <label htmlFor="obs-crf">Qualität (CRF/CQ)</label>
+                    <div className="obs-inline">
+                      <input
+                        id="obs-crf"
+                        type="number"
+                        min={0}
+                        max={51}
+                        step={1}
+                        value={encoder.crf}
+                        disabled={streaming}
+                        onChange={(e) =>
+                          patchEncoder({
+                            crf: Number(e.target.value) || 23,
+                          })
+                        }
+                      />
+                      <span>0–51 (niedriger = besser)</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="obs-row">
+                    <label htmlFor="obs-vbr">Videobitrate</label>
+                    <div className="obs-inline">
+                      <input
+                        id="obs-vbr"
+                        type="number"
+                        min={500}
+                        max={50000}
+                        step={100}
+                        value={encoder.videoBitrate}
+                        disabled={streaming}
+                        onChange={(e) =>
+                          patchEncoder({
+                            videoBitrate: Number(e.target.value) || 4500,
+                          })
+                        }
+                      />
+                      <span>Kbps</span>
+                    </div>
+                  </div>
+                )}
+
+                {advanced && (
+                  <>
+                    <div className="obs-row">
+                      <label htmlFor="obs-keyint">Keyframe-Intervall</label>
+                      <div className="obs-inline">
+                        <input
+                          id="obs-keyint"
+                          type="number"
+                          min={0.5}
+                          max={10}
+                          step={0.5}
+                          value={encoder.keyframeIntervalSec}
+                          disabled={streaming}
+                          onChange={(e) =>
+                            patchEncoder({
+                              keyframeIntervalSec:
+                                Number(e.target.value) || 2,
+                            })
+                          }
+                        />
+                        <span>Sekunden</span>
+                      </div>
+                    </div>
+
+                    <div className="obs-row">
+                      <label htmlFor="obs-profile">Profil</label>
+                      <select
+                        id="obs-profile"
+                        value={encoder.profile}
+                        disabled={streaming}
+                        onChange={(e) =>
+                          patchEncoder({
+                            profile: e.target
+                              .value as EncoderSettings['profile'],
+                          })
+                        }
+                      >
+                        <option value="baseline">baseline</option>
+                        <option value="main">main</option>
+                        <option value="high">high</option>
+                      </select>
+                    </div>
+
+                    <div className="obs-row">
+                      <label htmlFor="obs-bf">B-Frames</label>
+                      <div className="obs-inline">
+                        <input
+                          id="obs-bf"
+                          type="number"
+                          min={0}
+                          max={16}
+                          step={1}
+                          value={encoder.bframes}
+                          disabled={streaming}
+                          onChange={(e) =>
+                            patchEncoder({
+                              bframes: Number(e.target.value) || 0,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div className="obs-row">
+                      <label htmlFor="obs-buf">Puffergröße</label>
+                      <div className="obs-inline">
+                        <input
+                          id="obs-buf"
+                          type="number"
+                          min={0.5}
+                          max={8}
+                          step={0.5}
+                          value={encoder.bufsizeMultiplier}
+                          disabled={streaming}
+                          onChange={(e) =>
+                            patchEncoder({
+                              bufsizeMultiplier:
+                                Number(e.target.value) || 2,
+                            })
+                          }
+                        />
+                        <span>× Bitrate</span>
+                      </div>
+                    </div>
+
+                    <div className="obs-row">
+                      <label htmlFor="obs-tune">Tune</label>
+                      <select
+                        id="obs-tune"
+                        value={encoder.tune}
+                        disabled={streaming}
+                        onChange={(e) =>
+                          patchEncoder({ tune: e.target.value })
+                        }
+                      >
+                        <option value="auto">Automatisch (Stream)</option>
+                        <option value="none">Keins</option>
+                        <option value="zerolatency">zerolatency (x264)</option>
+                        <option value="ll">ll (NVENC Low Latency)</option>
+                        <option value="hq">hq (NVENC Qualität)</option>
+                      </select>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -370,44 +545,93 @@ export function SettingsModal({
                   <label htmlFor="obs-res">Ausgangsauflösung</label>
                   <select
                     id="obs-res"
-                    value={draftSettings.encoder.resolution}
-                    disabled={streaming}
-                    onChange={(e) =>
-                      patchSettings({
-                        ...draftSettings,
-                        encoder: {
-                          ...draftSettings.encoder,
-                          resolution: e.target
-                            .value as StreamSettings['encoder']['resolution'],
-                        },
-                      })
+                    value={
+                      OUTPUT_RESOLUTIONS.includes(
+                        encoder.resolution as (typeof OUTPUT_RESOLUTIONS)[number],
+                      )
+                        ? encoder.resolution
+                        : 'custom'
                     }
+                    disabled={streaming}
+                    onChange={(e) => {
+                      if (e.target.value === 'custom') return
+                      patchEncoder({ resolution: e.target.value })
+                    }}
                   >
-                    <option value="1920x1080">1920x1080</option>
-                    <option value="1280x720">1280x720</option>
+                    {OUTPUT_RESOLUTIONS.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                    <option value="custom">Benutzerdefiniert…</option>
                   </select>
                 </div>
 
+                {(advanced ||
+                  !OUTPUT_RESOLUTIONS.includes(
+                    encoder.resolution as (typeof OUTPUT_RESOLUTIONS)[number],
+                  )) && (
+                  <div className="obs-row">
+                    <label htmlFor="obs-res-custom">Eigene Auflösung</label>
+                    <input
+                      id="obs-res-custom"
+                      type="text"
+                      placeholder="z. B. 1920x1080"
+                      value={encoder.resolution}
+                      disabled={streaming}
+                      spellCheck={false}
+                      onChange={(e) =>
+                        patchEncoder({ resolution: e.target.value.trim() })
+                      }
+                    />
+                  </div>
+                )}
+
                 <div className="obs-row">
-                  <label htmlFor="obs-fps">FPS-Werte</label>
+                  <label htmlFor="obs-fps">FPS</label>
                   <select
                     id="obs-fps"
-                    value={draftSettings.encoder.fps}
+                    value={encoder.fps}
                     disabled={streaming}
                     onChange={(e) =>
-                      patchSettings({
-                        ...draftSettings,
-                        encoder: {
-                          ...draftSettings.encoder,
-                          fps: Number(e.target.value) as 30 | 60,
-                        },
-                      })
+                      patchEncoder({ fps: Number(e.target.value) || 30 })
                     }
                   >
-                    <option value={30}>30</option>
-                    <option value={60}>60</option>
+                    {OUTPUT_FPS_OPTIONS.map((f) => (
+                      <option key={f} value={f}>
+                        {f}
+                      </option>
+                    ))}
+                    {advanced &&
+                      !OUTPUT_FPS_OPTIONS.includes(
+                        encoder.fps as (typeof OUTPUT_FPS_OPTIONS)[number],
+                      ) && (
+                        <option value={encoder.fps}>{encoder.fps} (aktuell)</option>
+                      )}
                   </select>
                 </div>
+
+                {advanced && (
+                  <div className="obs-row">
+                    <label htmlFor="obs-fps-custom">Eigene FPS</label>
+                    <div className="obs-inline">
+                      <input
+                        id="obs-fps-custom"
+                        type="number"
+                        min={1}
+                        max={120}
+                        step={1}
+                        value={encoder.fps}
+                        disabled={streaming}
+                        onChange={(e) =>
+                          patchEncoder({
+                            fps: Number(e.target.value) || 30,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -422,23 +646,62 @@ export function SettingsModal({
                       min={64}
                       max={320}
                       step={16}
-                      value={draftSettings.encoder.audioBitrate}
+                      value={encoder.audioBitrate}
                       disabled={streaming}
                       onChange={(e) =>
-                        patchSettings({
-                          ...draftSettings,
-                          encoder: {
-                            ...draftSettings.encoder,
-                            audioBitrate: Number(e.target.value) || 160,
-                          },
+                        patchEncoder({
+                          audioBitrate: Number(e.target.value) || 160,
                         })
                       }
                     />
                     <span>Kbps</span>
                   </div>
                 </div>
+
+                {advanced && (
+                  <>
+                    <div className="obs-row">
+                      <label htmlFor="obs-asr">Abtastrate</label>
+                      <select
+                        id="obs-asr"
+                        value={encoder.audioSampleRate}
+                        disabled={streaming}
+                        onChange={(e) =>
+                          patchEncoder({
+                            audioSampleRate: Number(
+                              e.target.value,
+                            ) as EncoderSettings['audioSampleRate'],
+                          })
+                        }
+                      >
+                        <option value={48000}>48 kHz</option>
+                        <option value={44100}>44,1 kHz</option>
+                      </select>
+                    </div>
+                    <div className="obs-row">
+                      <label htmlFor="obs-ach">Kanäle</label>
+                      <select
+                        id="obs-ach"
+                        value={encoder.audioChannels}
+                        disabled={streaming}
+                        onChange={(e) =>
+                          patchEncoder({
+                            audioChannels: Number(e.target.value) === 1 ? 1 : 2,
+                          })
+                        }
+                      >
+                        <option value={2}>Stereo</option>
+                        <option value={1}>Mono</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+
                 <p className="obs-hint">
-                  Mikrofon und Desktop-Audio werden in den Quellen gewählt.
+                  Mikrofon und Desktop-Audio werden im Audio-Panel gewählt.
+                  {advanced
+                    ? ''
+                    : ' Für Abtastrate/Kanäle: Ausgabemodus → Fortgeschritten.'}
                 </p>
               </div>
             )}
@@ -589,10 +852,28 @@ export function SettingsModal({
                   <label>FFmpeg-Pfad</label>
                   <input value={ffmpegPath || '—'} readOnly disabled />
                 </div>
+                <div className="obs-row">
+                  <label>Ausgabemodus</label>
+                  <select
+                    value={encoder.outputMode}
+                    disabled={streaming}
+                    onChange={(e) =>
+                      patchEncoder({
+                        outputMode:
+                          e.target.value === 'advanced' ? 'advanced' : 'simple',
+                      })
+                    }
+                  >
+                    <option value="simple">Einfach</option>
+                    <option value="advanced">Fortgeschritten</option>
+                  </select>
+                </div>
                 <p className="obs-hint">
+                  Unter <strong>Ausgabe</strong> findest du Rate Control, Keyframes,
+                  Profil, B-Frames und Tune — wenn Fortgeschritten aktiv ist.
                   {streaming
-                    ? 'Während eines Live-Streams sind Encoder- und Ausgabe-Änderungen gesperrt.'
-                    : 'Erweiterte Capture-/Encode-Optionen folgen in späteren Versionen.'}
+                    ? ' Während eines Live-Streams sind Encoder-Änderungen gesperrt.'
+                    : ''}
                 </p>
               </div>
             )}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ScenesPanel } from './components/ScenesPanel'
 import { SourcesPanel } from './components/SourcesPanel'
+import { AudioSourcesPanel } from './components/AudioSourcesPanel'
 import { PreviewPanel } from './components/PreviewPanel'
 import { StreamPanel } from './components/StreamPanel'
 import { ChatPanel } from './components/ChatPanel'
@@ -24,6 +25,8 @@ import {
   createSource,
   defaultTheme,
   normalizeUiLayout,
+  isVisualSource,
+  isAudioSource,
 } from './shared/types'
 import { UpdateBanner } from './components/UpdateBanner'
 import { applyTheme } from './theme'
@@ -53,7 +56,39 @@ export default function App() {
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('output')
   const [ffmpegPath, setFfmpegPath] = useState('')
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
+  const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null)
   const [pickBanner, setPickBanner] = useState<string | null>(null)
+  const [updateCheckRequest, setUpdateCheckRequest] = useState(0)
+  const [updateToast, setUpdateToast] = useState<string | null>(null)
+  const updateToastTimer = useRef<number | null>(null)
+
+  function showUpdateToast(message: string) {
+    setUpdateToast(message)
+    if (updateToastTimer.current != null) {
+      window.clearTimeout(updateToastTimer.current)
+    }
+    updateToastTimer.current = window.setTimeout(() => setUpdateToast(null), 3500)
+  }
+
+  function handleUpdateChecked(
+    result: import('./shared/updates').UpdateCheckResult | null,
+  ) {
+    if (!result) {
+      showUpdateToast('Update-Check fehlgeschlagen (kein Feed erreichbar).')
+      return
+    }
+    const hasNews =
+      result.hasVersionUpdate || (result.announcements?.length ?? 0) > 0
+    if (hasNews) {
+      showUpdateToast(
+        result.hasVersionUpdate
+          ? `Update verfügbar: v${result.feed.version}`
+          : 'Neue Nachricht verfügbar.',
+      )
+    } else {
+      showUpdateToast(`Keine Updates — du nutzt v${result.appVersion}.`)
+    }
+  }
 
   const activeScene = useMemo(
     () => config.scenes.find((s) => s.id === config.activeSceneId) ?? config.scenes[0],
@@ -62,11 +97,22 @@ export default function App() {
 
   const persistScenes = useCallback(
     async (scenes: Scene[], activeSceneId: string) => {
-      const next = await window.twoYou.saveScenes(scenes, activeSceneId)
+      const cleaned = scenes.map((scene) => ({
+        ...scene,
+        sources: scene.sources.filter((s) => isVisualSource(s.type)),
+      }))
+      const next = await window.twoYou.saveScenes(cleaned, activeSceneId)
       setConfig(next)
     },
     [],
   )
+
+  const persistAudioSources = useCallback(async (audioSources: StreamSource[]) => {
+    const next = await window.twoYou.saveAudioSources(
+      audioSources.filter((s) => isAudioSource(s.type)),
+    )
+    setConfig(next)
+  }, [])
 
   const persistSettings = useCallback(async (settings: StreamSettings) => {
     const next = await window.twoYou.saveSettings(settings)
@@ -278,6 +324,7 @@ export default function App() {
     const result = await window.twoYou.startStream({
       settings: config.settings,
       scene: activeScene,
+      audioSources: config.audioSources ?? [],
       displayIndex,
     })
     setBusy(false)
@@ -340,6 +387,14 @@ export default function App() {
           <button
             type="button"
             className="ghost"
+            title="Jetzt nach Updates suchen (automatisch stündlich)"
+            onClick={() => setUpdateCheckRequest((n) => n + 1)}
+          >
+            Update prüfen
+          </button>
+          <button
+            type="button"
+            className="ghost"
             onClick={() => {
               setSettingsCategory('output')
               setSettingsOpen(true)
@@ -374,6 +429,32 @@ export default function App() {
             <span className={`live-dot ${status.streaming ? 'on' : ''}`} />
             {status.streaming ? 'On Air' : 'Offline'}
           </div>
+          <div className="window-controls" aria-label="Fenster">
+            <button
+              type="button"
+              className="window-btn"
+              title="Minimieren"
+              onClick={() => void window.twoYou.minimizeWindow()}
+            >
+              ─
+            </button>
+            <button
+              type="button"
+              className="window-btn"
+              title="Maximieren"
+              onClick={() => void window.twoYou.maximizeWindow()}
+            >
+              □
+            </button>
+            <button
+              type="button"
+              className="window-btn window-btn-close"
+              title="Schließen"
+              onClick={() => void window.twoYou.closeWindow()}
+            >
+              ×
+            </button>
+          </div>
         </div>
       </header>
 
@@ -383,7 +464,16 @@ export default function App() {
         </div>
       )}
 
-      <UpdateBanner />
+      {updateToast && (
+        <div className="update-toast" role="status">
+          {updateToast}
+        </div>
+      )}
+
+      <UpdateBanner
+        checkRequest={updateCheckRequest}
+        onManualChecked={handleUpdateChecked}
+      />
 
       <FlexibleWorkspace
         layout={normalizeUiLayout(config.layout)}
@@ -450,11 +540,15 @@ export default function App() {
                   }))
                 }
                 onAddSource={(type) => {
+                  if (isAudioSource(type)) return
                   const source: StreamSource = createSource(type)
                   setSelectedSourceId(source.id)
                   updateActiveScene((scene) => ({
                     ...scene,
-                    sources: [...scene.sources, source],
+                    sources: [
+                      ...scene.sources.filter((s) => isVisualSource(s.type)),
+                      source,
+                    ],
                   }))
                 }}
                 onRemoveSource={(sourceId) => {
@@ -466,17 +560,36 @@ export default function App() {
                 }}
                 onMove={(sourceId, direction) =>
                   updateActiveScene((scene) => {
-                    const idx = scene.sources.findIndex((s) => s.id === sourceId)
+                    const visual = scene.sources.filter((s) =>
+                      isVisualSource(s.type),
+                    )
+                    const idx = visual.findIndex((s) => s.id === sourceId)
                     const next = idx + direction
-                    if (idx < 0 || next < 0 || next >= scene.sources.length) return scene
-                    const sources = [...scene.sources]
-                    const [item] = sources.splice(idx, 1)
-                    sources.splice(next, 0, item)
-                    return { ...scene, sources }
+                    if (idx < 0 || next < 0 || next >= visual.length) return scene
+                    const reordered = [...visual]
+                    const [item] = reordered.splice(idx, 1)
+                    reordered.splice(next, 0, item)
+                    return { ...scene, sources: reordered }
                   })
                 }
                 onPickFile={(sourceId, kind) => void handlePickFile(sourceId, kind)}
                 onPickWindowCapture={(kind) => void handlePickWindowCapture(kind)}
+              />
+            )
+          }
+          if (id === 'audio') {
+            return (
+              <AudioSourcesPanel
+                embedded
+                audioSources={config.audioSources ?? []}
+                windows={windows}
+                mics={mics}
+                selectedId={selectedAudioId}
+                onSelect={setSelectedAudioId}
+                onChange={(audioSources) => {
+                  setConfig((c) => ({ ...c, audioSources }))
+                  void persistAudioSources(audioSources)
+                }}
               />
             )
           }

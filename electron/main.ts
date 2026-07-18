@@ -5,12 +5,13 @@ import {
   dialog,
   globalShortcut,
   ipcMain,
+  Menu,
   session,
   systemPreferences,
 } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadConfig, saveConfig, updateScenes, updateSettings, updateTheme, updateLayout } from './config'
+import { loadConfig, saveConfig, updateScenes, updateSettings, updateTheme, updateLayout, updateAudioSources, preserveConfigAcrossAppUpdate } from './config'
 import { FfmpegStreamer, getFfmpegPath, listDshowDevices, detectAvailableEncoders } from './ffmpeg'
 import { TwitchChatService } from './chat'
 import { cancelWindowPick, startWindowPick, type PickKind } from './windowPick'
@@ -19,6 +20,8 @@ import {
   dismissUpdateIds,
   openUpdateDownload,
 } from './updates'
+import { getSystemStats } from './systemStats'
+import { subscribeLoopbackMeter } from './loopbackMeter'
 import type {
   AppConfig,
   DisplayInfo,
@@ -34,6 +37,9 @@ const streamer = new FfmpegStreamer()
 const chat = new TwitchChatService()
 
 function createWindow(): void {
+  // Kein natives Menü (File/Edit/…) — nur die App-Oberfläche
+  Menu.setApplicationMenu(null)
+
   const themeBg = loadConfig().theme?.bg ?? '#0e1116'
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -42,6 +48,8 @@ function createWindow(): void {
     minHeight: 700,
     title: '2you Streaming',
     backgroundColor: themeBg,
+    frame: false,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -74,6 +82,22 @@ streamer.onStatus(() => {
 })
 
 function registerIpc(): void {
+  ipcMain.handle('window:minimize', () => {
+    mainWindow?.minimize()
+  })
+  ipcMain.handle('window:maximize', () => {
+    if (!mainWindow) return false
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+    return mainWindow.isMaximized()
+  })
+  ipcMain.handle('window:close', () => {
+    mainWindow?.close()
+  })
+  ipcMain.handle('window:isMaximized', (): boolean => {
+    return mainWindow?.isMaximized() ?? false
+  })
+
   ipcMain.handle('config:get', (): AppConfig => loadConfig())
 
   ipcMain.handle('config:saveSettings', (_e, settings: StreamSettings): AppConfig => {
@@ -102,6 +126,13 @@ function registerIpc(): void {
     },
   )
 
+  ipcMain.handle(
+    'config:saveAudioSources',
+    (_e, audioSources: import('../src/shared/types').StreamSource[]): AppConfig => {
+      return updateAudioSources(audioSources)
+    },
+  )
+
   ipcMain.handle('config:saveAll', (_e, config: AppConfig): AppConfig => {
     saveConfig(config)
     return config
@@ -126,10 +157,49 @@ function registerIpc(): void {
       types: ['window'],
       thumbnailSize: { width: 0, height: 0 },
     })
-    return sources.map((s) => ({
-      id: s.id,
-      name: s.name,
-    }))
+
+    // Titel → PID (für Anwendungsaudio)
+    const titleToPid = new Map<string, { processId: number; processName: string }>()
+    if (process.platform === 'win32') {
+      try {
+        const { execFile } = await import('node:child_process')
+        const { promisify } = await import('node:util')
+        const execFileAsync = promisify(execFile)
+        const { stdout } = await execFileAsync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            "Get-Process | Where-Object { $_.MainWindowTitle } | ForEach-Object { '{0}|{1}|{2}' -f $_.Id, $_.ProcessName, $_.MainWindowTitle }",
+          ],
+          { windowsHide: true, timeout: 8000 },
+        )
+        for (const line of stdout.toString('utf8').split(/\r?\n/)) {
+          const parts = line.split('|')
+          if (parts.length < 3) continue
+          const processId = Number.parseInt(parts[0], 10)
+          const processName = parts[1]
+          const title = parts.slice(2).join('|').trim()
+          if (!title || !Number.isFinite(processId)) continue
+          titleToPid.set(title, { processId, processName })
+        }
+      } catch {
+        /* PID optional */
+      }
+    }
+
+    return sources.map((s) => {
+      const hit =
+        titleToPid.get(s.name) ||
+        [...titleToPid.entries()].find(([t]) => s.name.includes(t) || t.includes(s.name))?.[1]
+      return {
+        id: s.id,
+        name: s.name,
+        processId: hit?.processId,
+        processName: hit?.processName,
+      }
+    })
   })
 
   ipcMain.handle('devices:micPermission', async (): Promise<boolean> => {
@@ -168,6 +238,57 @@ function registerIpc(): void {
   ipcMain.handle('updates:openDownload', (_e, url?: string) =>
     openUpdateDownload(url),
   )
+  ipcMain.handle('system:stats', () => getSystemStats())
+
+  const meterUnsubs = new Map<string, () => void>()
+  const meterVolumes = new Map<string, number>()
+
+  ipcMain.handle(
+    'audio:meterStart',
+    async (
+      e,
+      payload: {
+        id: string
+        processId?: number | null
+        processName?: string | null
+        volume?: number
+      },
+    ) => {
+      const prev = meterUnsubs.get(payload.id)
+      prev?.()
+      meterVolumes.set(payload.id, payload.volume ?? 100)
+      const wc = e.sender
+      const unsub = await subscribeLoopbackMeter(
+        {
+          processId: payload.processId,
+          processName: payload.processName,
+        },
+        (level, peak) => {
+          if (!wc.isDestroyed()) {
+            wc.send('audio:meterLevel', { id: payload.id, level, peak })
+          }
+        },
+        () => meterVolumes.get(payload.id) ?? 100,
+      )
+      meterUnsubs.set(payload.id, unsub)
+      return { ok: true as const }
+    },
+  )
+
+  ipcMain.handle(
+    'audio:meterVolume',
+    (_e, payload: { id: string; volume: number }) => {
+      meterVolumes.set(payload.id, payload.volume)
+      return { ok: true as const }
+    },
+  )
+
+  ipcMain.handle('audio:meterStop', (_e, id: string) => {
+    meterUnsubs.get(id)?.()
+    meterUnsubs.delete(id)
+    meterVolumes.delete(id)
+    return { ok: true as const }
+  })
 
   ipcMain.handle(
     'fs:saveDroppedFile',
@@ -275,6 +396,8 @@ app.whenReady().then(() => {
   })
 
   registerIpc()
+  // App-Update: Szenen, Quellen, Settings bleiben in userData erhalten
+  preserveConfigAcrossAppUpdate()
   createWindow()
 
   const runPick = (kind: PickKind) => {

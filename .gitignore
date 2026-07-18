@@ -9,3 +9,7 @@ resources/ffmpeg/*
 Thumbs.db
 .env
 .env.*
+!.env.signing.example
+certs/*.pfx
+certs/*.p12
+certs/*.pem

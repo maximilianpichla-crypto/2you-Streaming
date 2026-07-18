@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
 interface Props {
-  /** Browser- oder DShow-Gerätename */
+  /** Browser- oder DShow-Gerätename (Mikrofon) */
   deviceId?: string
   deviceLabel?: string
   enabled: boolean
@@ -9,6 +9,15 @@ interface Props {
   volume: number
   onVolumeChange?: (volume: number) => void
   compact?: boolean
+  /**
+   * loopback = Desktop-/App-Audio über WASAPI (nicht Mikrofon)
+   * device = getUserMedia / Mic
+   */
+  mode?: 'device' | 'loopback'
+  /** App-Audio: Fenster-PID */
+  processId?: number | null
+  /** App-Audio: z. B. Spotify — alle Prozesse dieses Namens */
+  processName?: string | null
 }
 
 async function resolveAudioConstraints(
@@ -43,7 +52,12 @@ export function AudioLevelMeter({
   volume,
   onVolumeChange,
   compact = false,
+  mode = 'device',
+  processId = null,
+  processName = null,
 }: Props) {
+  const reactId = useId()
+  const meterId = `meter-${reactId}`
   const [level, setLevel] = useState(0)
   const [peak, setPeak] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -52,8 +66,68 @@ export function AudioLevelMeter({
   const volumeRef = useRef(volume)
   volumeRef.current = volume
 
+  // Lautstärke an WASAPI-Meter durchreichen
   useEffect(() => {
+    if (mode !== 'loopback') return
+    void window.twoYou.setLoopbackMeterVolume({ id: meterId, volume })
+  }, [mode, meterId, volume])
+
+  // WASAPI-Loopback-Pegel (Desktop / Spotify / …)
+  useEffect(() => {
+    if (mode !== 'loopback') return
     if (!enabled) {
+      setLevel(0)
+      setPeak(0)
+      setError(null)
+      void window.twoYou.stopLoopbackMeter(meterId)
+      return
+    }
+    // App gewählt, aber noch keine PID/Name
+    if (processId == null && !processName) {
+      // Desktop-Loopback: beides null/leer ist ok — processId null + no name = desktop
+      // Für app_audio kommt processId gesetzt. Desktop hat processId null und processName null.
+    }
+
+    let cancelled = false
+    setError(null)
+
+    const unsubLevel = window.twoYou.onLoopbackMeterLevel((payload) => {
+      if (payload.id !== meterId || cancelled) return
+      setLevel(payload.level)
+      setPeak(payload.peak)
+    })
+
+    void window.twoYou
+      .startLoopbackMeter({
+        id: meterId,
+        processId,
+        processName,
+        volume: volumeRef.current,
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Pegel fehlgeschlagen')
+        }
+      })
+
+    return () => {
+      cancelled = true
+      unsubLevel()
+      void window.twoYou.stopLoopbackMeter(meterId)
+    }
+  }, [mode, enabled, meterId, processId, processName])
+
+  // Mikrofon-Pegel
+  useEffect(() => {
+    if (mode === 'loopback') return
+    if (!enabled) {
+      setLevel(0)
+      setPeak(0)
+      setError(null)
+      return
+    }
+
+    if (!deviceId) {
       setLevel(0)
       setPeak(0)
       setError(null)
@@ -131,12 +205,13 @@ export function AudioLevelMeter({
       stream?.getTracks().forEach((t) => t.stop())
       void ctx?.close()
     }
-  }, [enabled, deviceId, deviceLabel])
+  }, [mode, enabled, deviceId, deviceLabel])
 
   const pct = Math.round(level * 100)
   const peakPct = Math.round(peak * 100)
   const hot = level > 0.85
   const warn = level > 0.65 && !hot
+  const inputId = `vol-${deviceId || processId || meterId}`
 
   return (
     <div
@@ -152,9 +227,9 @@ export function AudioLevelMeter({
       </div>
       {!compact && onVolumeChange && (
         <div className="audio-meter-volume">
-          <label htmlFor={`vol-${deviceId || 'default'}`}>Lautstärke</label>
+          <label htmlFor={inputId}>Lautstärke</label>
           <input
-            id={`vol-${deviceId || 'default'}`}
+            id={inputId}
             type="range"
             min={0}
             max={100}

@@ -1,32 +1,50 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { UpdateCheckResult } from '../shared/updates'
 
+const HOUR_MS = 60 * 60 * 1000
+
 type Props = {
-  refreshKey?: number
+  /** Erhöhen = sofort erneut prüfen (z. B. Button) */
+  checkRequest?: number
+  /** Nur bei manuellem Check (checkRequest-Änderung) */
+  onManualChecked?: (result: UpdateCheckResult | null) => void
 }
 
-export function UpdateBanner({ refreshKey = 0 }: Props) {
+export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
   const [result, setResult] = useState<UpdateCheckResult | null>(null)
+  const [checking, setChecking] = useState(false)
+  const lastRequest = useRef(checkRequest)
 
+  async function load(manual: boolean) {
+    setChecking(true)
+    try {
+      const next = await window.twoYou.checkUpdates()
+      setResult(next)
+      if (manual) onManualChecked?.(next)
+    } catch {
+      setResult(null)
+      if (manual) onManualChecked?.(null)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  // Start + stündlich
   useEffect(() => {
-    let cancelled = false
+    void load(false)
+    const timer = window.setInterval(() => void load(false), HOUR_MS)
+    return () => window.clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-    async function load() {
-      try {
-        const next = await window.twoYou.checkUpdates()
-        if (!cancelled) setResult(next)
-      } catch {
-        if (!cancelled) setResult(null)
-      }
-    }
-
-    void load()
-    const timer = window.setInterval(() => void load(), 60_000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [refreshKey])
+  // Manueller Button
+  useEffect(() => {
+    if (checkRequest === lastRequest.current) return
+    lastRequest.current = checkRequest
+    if (checkRequest === 0) return
+    void load(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkRequest])
 
   const item = result?.announcements[0]
   if (!item && !result?.hasVersionUpdate) return null
@@ -53,7 +71,10 @@ export function UpdateBanner({ refreshKey = 0 }: Props) {
   }
 
   return (
-    <div className={`update-banner level-${level}`} role="status">
+    <div
+      className={`update-banner level-${level}${checking ? ' checking' : ''}`}
+      role="status"
+    >
       <div className="update-banner-text">
         <strong>{title}</strong>
         {body ? <span>{body}</span> : null}
@@ -73,6 +94,11 @@ export function UpdateBanner({ refreshKey = 0 }: Props) {
           >
             Download
           </button>
+        ) : null}
+        {result?.hasVersionUpdate ? (
+          <span className="update-banner-meta">
+            Deine Szenen &amp; Einstellungen bleiben erhalten.
+          </span>
         ) : null}
         {!result?.forceUpdate ? (
           <button type="button" className="ghost" onClick={() => void dismiss()}>

@@ -45,6 +45,14 @@ function filePathOf(file: File): string | null {
   return null
 }
 
+function formatClock(d: Date): string {
+  return d.toLocaleTimeString('de-DE', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 export function PreviewPanel({
   scene,
   streaming,
@@ -62,6 +70,58 @@ export function PreviewPanel({
   const [animKey, setAnimKey] = useState(0)
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
+  const [clock, setClock] = useState(() => formatClock(new Date()))
+  const [stats, setStats] = useState<{
+    cpu: string
+    ram: string
+    gpu: string
+  }>({ cpu: '—', ram: '—', gpu: '—' })
+
+  useEffect(() => {
+    const tick = () => setClock(formatClock(new Date()))
+    tick()
+    const t = window.setInterval(tick, 1000)
+    return () => window.clearInterval(t)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    async function poll() {
+      try {
+        const s = await window.twoYou.getSystemStats()
+        if (cancelled) return
+        setStats({
+          cpu:
+            s.cpuPercent == null
+              ? '…'
+              : s.cpuTempC != null
+                ? `${s.cpuPercent}% · ${s.cpuTempC}°C`
+                : `${s.cpuPercent}%`,
+          ram:
+            s.ramPercent == null
+              ? '—'
+              : `${s.ramPercent}% · ${s.ramUsedGb ?? '—'}/${s.ramTotalGb ?? '—'} GB`,
+          gpu:
+            s.gpuPercent == null && s.gpuTempC == null
+              ? '—'
+              : [
+                  s.gpuPercent != null ? `${s.gpuPercent}%` : null,
+                  s.gpuTempC != null ? `${s.gpuTempC}°C` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · '),
+        })
+      } catch {
+        /* ignore */
+      }
+    }
+    void poll()
+    const t = window.setInterval(() => void poll(), 1500)
+    return () => {
+      cancelled = true
+      window.clearInterval(t)
+    }
+  }, [])
 
   const visualSources =
     scene?.sources.filter((s) => s.enabled && isVisualSource(s.type)) ?? []
@@ -199,15 +259,22 @@ export function PreviewPanel({
       <div className="preview-toolbar">
         <span className={`live-dot ${streaming ? 'on' : ''}`} />
         <span>{streaming ? 'Live' : 'Vorschau'}</span>
-        <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+        <span className="preview-toolbar-muted">
           {transition.type !== 'cut' ? `· ${transition.type}` : ''}
         </span>
-        <span style={{ color: 'var(--text-muted)', marginLeft: '0.75rem' }}>
-          Drag & Drop · ziehen · skalieren
-        </span>
-        <span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>
-          {scene?.name ?? '—'}
-        </span>
+        <div className="preview-sysstats" title={stats.gpu !== '—' ? 'GPU' : 'GPU (keine Messung)'}>
+          <span>
+            <em>CPU</em> {stats.cpu}
+          </span>
+          <span>
+            <em>RAM</em> {stats.ram}
+          </span>
+          <span>
+            <em>GPU</em> {stats.gpu}
+          </span>
+          <span className="preview-clock">{clock}</span>
+        </div>
+        <span className="preview-toolbar-scene">{scene?.name ?? '—'}</span>
       </div>
     </div>
   )

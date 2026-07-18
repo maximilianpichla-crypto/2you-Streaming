@@ -11,12 +11,28 @@ import {
   VideoEncoderId,
   getEncoderInfo,
   isVisualSource,
+  normalizeEncoderSettings,
   normalizeTransform,
   resolveRtmpUrl,
 } from '../src/shared/types'
 
-export type StatusListener = (status: StreamStatus) => void
+import {
+  buildWasapiCaptureArgs,
+  getWasapiCapturePath,
+  wasapiCaptureAvailable,
+} from './wasapiCapture'
+import { resolveLoopbackPids } from './loopbackMeter'
 
+export type BuiltFfmpegPlan = {
+  args: string[]
+  loopback?: {
+    mode: 'desktop' | 'app'
+    processId?: number
+    processName?: string
+  }
+}
+
+export type StatusListener = (status: StreamStatus) => void
 export function getFfmpegPath(): string {
   const bundled = app.isPackaged
     ? path.join(process.resourcesPath, 'ffmpeg', 'ffmpeg.exe')
@@ -91,104 +107,173 @@ export async function detectAvailableEncoders(): Promise<VideoEncoderId[]> {
 }
 
 function buildVideoEncoderArgs(encoder: EncoderSettings, fps: number): string[] {
-  const info = getEncoderInfo(encoder.videoEncoder)
-  const preset = encoder.preset || info.defaultPreset
-  const vBitrate = `${encoder.videoBitrate}k`
-  const bufsize = `${encoder.videoBitrate * 2}k`
-  const gop = String(fps * 2)
+  const enc = {
+    ...encoder,
+    // In Simple-Mode feste, stream-sichere Defaults
+    ...(encoder.outputMode !== 'advanced'
+      ? {
+          rateControl: 'cbr' as const,
+          keyframeIntervalSec: 2,
+          profile: 'high' as const,
+          bframes: encoder.videoEncoder === 'x264' ? 0 : 2,
+          bufsizeMultiplier: 2,
+          tune: 'auto',
+        }
+      : {}),
+  }
+
+  const info = getEncoderInfo(enc.videoEncoder)
+  const preset = enc.preset || info.defaultPreset
+  const vBitrate = `${enc.videoBitrate}k`
+  const maxrate =
+    enc.rateControl === 'vbr'
+      ? `${Math.round(enc.videoBitrate * 1.35)}k`
+      : vBitrate
+  const bufsize = `${Math.round(enc.videoBitrate * (enc.bufsizeMultiplier || 2))}k`
+  const gop = String(Math.max(1, Math.round(fps * (enc.keyframeIntervalSec || 2))))
+  const profile = enc.profile || 'high'
+  const bf = Math.max(0, enc.bframes ?? 0)
   const args: string[] = []
 
-  switch (encoder.videoEncoder) {
-    case 'nvenc':
+  const x264Tune =
+    enc.tune === 'none'
+      ? null
+      : enc.tune === 'auto' || !enc.tune
+        ? 'zerolatency'
+        : enc.tune
+  const nvencTune =
+    enc.tune === 'none'
+      ? null
+      : enc.tune === 'hq'
+        ? 'hq'
+        : enc.tune === 'll' || enc.tune === 'auto' || !enc.tune
+          ? 'll'
+          : enc.tune
+
+  switch (enc.videoEncoder) {
+    case 'nvenc': {
+      args.push('-c:v', 'h264_nvenc', '-preset', preset)
+      if (nvencTune) args.push('-tune', nvencTune)
+      if (enc.rateControl === 'crf') {
+        args.push('-rc', 'constqp', '-qp', String(enc.crf))
+      } else if (enc.rateControl === 'vbr') {
+        args.push(
+          '-rc',
+          'vbr',
+          '-b:v',
+          vBitrate,
+          '-maxrate',
+          maxrate,
+          '-bufsize',
+          bufsize,
+        )
+      } else {
+        args.push(
+          '-rc',
+          'cbr',
+          '-b:v',
+          vBitrate,
+          '-maxrate',
+          vBitrate,
+          '-bufsize',
+          bufsize,
+        )
+      }
       args.push(
-        '-c:v',
-        'h264_nvenc',
-        '-preset',
-        preset,
-        '-tune',
-        'll',
-        '-rc',
-        'cbr',
-        '-b:v',
-        vBitrate,
-        '-maxrate',
-        vBitrate,
-        '-bufsize',
-        bufsize,
         '-profile:v',
-        'high',
+        profile,
+        '-bf',
+        String(bf),
         '-pix_fmt',
         'yuv420p',
         '-g',
         gop,
       )
       break
-    case 'amf':
+    }
+    case 'amf': {
+      args.push('-c:v', 'h264_amf', '-quality', preset)
+      if (enc.rateControl === 'crf') {
+        args.push('-rc', 'cqp', '-qp_i', String(enc.crf), '-qp_p', String(enc.crf))
+      } else if (enc.rateControl === 'vbr') {
+        args.push(
+          '-rc',
+          'vbr_latency',
+          '-b:v',
+          vBitrate,
+          '-maxrate',
+          maxrate,
+          '-bufsize',
+          bufsize,
+        )
+      } else {
+        args.push(
+          '-rc',
+          'cbr',
+          '-b:v',
+          vBitrate,
+          '-maxrate',
+          vBitrate,
+          '-bufsize',
+          bufsize,
+        )
+      }
+      args.push('-profile:v', profile, '-pix_fmt', 'yuv420p', '-g', gop)
+      break
+    }
+    case 'qsv': {
+      args.push('-c:v', 'h264_qsv', '-preset', preset)
+      if (enc.rateControl === 'crf') {
+        args.push('-global_quality', String(enc.crf))
+      } else {
+        args.push('-b:v', vBitrate, '-maxrate', maxrate, '-bufsize', bufsize)
+      }
       args.push(
-        '-c:v',
-        'h264_amf',
-        '-quality',
-        preset,
-        '-rc',
-        'cbr',
-        '-b:v',
-        vBitrate,
-        '-maxrate',
-        vBitrate,
-        '-bufsize',
-        bufsize,
+        '-profile:v',
+        profile,
+        '-bf',
+        String(bf),
         '-pix_fmt',
         'yuv420p',
         '-g',
         gop,
       )
       break
-    case 'qsv':
-      args.push(
-        '-c:v',
-        'h264_qsv',
-        '-preset',
-        preset,
-        '-b:v',
-        vBitrate,
-        '-maxrate',
-        vBitrate,
-        '-bufsize',
-        bufsize,
-        '-pix_fmt',
-        'yuv420p',
-        '-g',
-        gop,
-      )
-      break
+    }
     case 'x264':
-    default:
+    default: {
+      args.push('-c:v', 'libx264', '-preset', preset)
+      if (x264Tune) args.push('-tune', x264Tune)
+      if (enc.rateControl === 'crf') {
+        args.push('-crf', String(enc.crf))
+      } else {
+        args.push('-b:v', vBitrate, '-maxrate', maxrate, '-bufsize', bufsize)
+      }
       args.push(
-        '-c:v',
-        'libx264',
-        '-preset',
-        preset,
-        '-tune',
-        'zerolatency',
+        '-profile:v',
+        profile,
+        '-bf',
+        String(bf),
         '-pix_fmt',
         'yuv420p',
-        '-b:v',
-        vBitrate,
-        '-maxrate',
-        vBitrate,
-        '-bufsize',
-        bufsize,
         '-g',
         gop,
       )
       break
+    }
   }
 
   return args
 }
 
-function parseResolution(res: EncoderSettings['resolution']): { w: number; h: number } {
-  const [w, h] = res.split('x').map(Number)
+function parseResolution(res: string): { w: number; h: number } {
+  const match = /^(\d{2,5})x(\d{2,5})$/i.exec(String(res || '').trim())
+  if (!match) return { w: 1920, h: 1080 }
+  const w = Number(match[1])
+  const h = Number(match[2])
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w < 16 || h < 16) {
+    return { w: 1920, h: 1080 }
+  }
   return { w, h }
 }
 
@@ -212,23 +297,34 @@ function hexToFfmpegColor(hex: string): string {
 
 /**
  * Build FFmpeg args: black canvas + layered sources with transform overlays.
+ * Desktop-/App-Audio: WASAPI-Helper → pipe:0 (nicht Mikrofon/dshow).
  */
 export function buildFfmpegArgs(options: {
   settings: StreamSettings
   scene: Scene
+  audioSources: StreamSource[]
   displayIndex: number
-}): string[] {
-  const { settings, scene, displayIndex } = options
-  const { w, h } = parseResolution(settings.encoder.resolution)
-  const fps = settings.encoder.fps
-  const aBitrate = `${settings.encoder.audioBitrate}k`
+}): BuiltFfmpegPlan {
+  const { settings: rawSettings, scene, audioSources, displayIndex } = options
+  const encoder = normalizeEncoderSettings(rawSettings.encoder)
+  const settings = { ...rawSettings, encoder }
+  const { w, h } = parseResolution(encoder.resolution)
+  const fps = encoder.fps
+  const aBitrate = `${encoder.audioBitrate}k`
+  const aRate = encoder.audioSampleRate
+  const aCh = encoder.audioChannels
+  const aLayout = aCh === 1 ? 'mono' : 'stereo'
 
-  const enabled = scene.sources.filter((s) => s.enabled)
-  const visual = enabled.filter((s) => isVisualSource(s.type))
-  const mic = enabled.find((s) => s.type === 'microphone')
-  const desktopAudio = enabled.find(
-    (s) => s.type === 'desktop_audio' || s.type === 'app_audio',
+  const enabledVisual = scene.sources.filter(
+    (s) => s.enabled && isVisualSource(s.type),
   )
+  const visual = enabledVisual
+  const enabledAudio = (audioSources ?? []).filter((s) => s.enabled)
+  const mic = enabledAudio.find((s) => s.type === 'microphone')
+  const desktopAudio = enabledAudio.find((s) => s.type === 'desktop_audio')
+  const appAudio = enabledAudio.find((s) => s.type === 'app_audio')
+  const loopbackSource = appAudio ?? desktopAudio
+  const useWasapiLoopback = Boolean(loopbackSource) && wasapiCaptureAvailable()
 
   const rtmpBase = resolveRtmpUrl(settings)
   const key = settings.streamKey.trim()
@@ -240,7 +336,6 @@ export function buildFfmpegArgs(options: {
   let inputIndex = 0
   const filterParts: string[] = []
 
-  // Base canvas
   args.push(
     '-f',
     'lavfi',
@@ -310,7 +405,6 @@ export function buildFfmpegArgs(options: {
 
     if (source.type === 'display') {
       const drawMouse = source.settings?.captureCursor === false ? '0' : '1'
-      // gdigrab desktop = primary; multi-monitor offset not wired yet
       args.push(
         '-f',
         'gdigrab',
@@ -384,45 +478,81 @@ export function buildFfmpegArgs(options: {
     }
   }
 
-  // Rename final video to [vout]
   filterParts.push(`[${current}]null[vout]`)
 
-  // --- Audio inputs ---
   type AudioTrack = { index: number; volume: number }
   const audioTracks: AudioTrack[] = []
 
   const micName = mic?.deviceLabel || mic?.deviceId || ''
   if (mic && micName) {
-    args.push('-f', 'dshow', '-i', `audio=${micName}`)
+    args.push('-f', 'dshow', '-thread_queue_size', '1024', '-i', `audio=${micName}`)
     audioTracks.push({
       index: inputIndex++,
       volume: Math.max(0, Math.min(100, mic.settings?.volume ?? 100)) / 100,
     })
   }
 
-  const deskName = desktopAudio?.deviceLabel || desktopAudio?.deviceId || ''
-  if (desktopAudio && deskName) {
-    args.push('-f', 'dshow', '-i', `audio=${deskName}`)
+  let loopback: BuiltFfmpegPlan['loopback']
+
+  if (loopbackSource && useWasapiLoopback) {
+    args.push(
+      '-f',
+      's16le',
+      '-ar',
+      '48000',
+      '-ac',
+      '2',
+      '-thread_queue_size',
+      '2048',
+      '-i',
+      'pipe:0',
+    )
     audioTracks.push({
       index: inputIndex++,
-      volume: Math.max(0, Math.min(100, desktopAudio.settings?.volume ?? 100)) / 100,
+      volume:
+        Math.max(0, Math.min(100, loopbackSource.settings?.volume ?? 100)) / 100,
     })
+    if (loopbackSource.type === 'app_audio') {
+      const processId =
+        loopbackSource.settings?.processId ??
+        (Number.parseInt(String(loopbackSource.deviceId ?? ''), 10) || undefined)
+      const processName = loopbackSource.settings?.processName
+      if (!processId && !processName) {
+        throw new Error(
+          'Anwendungsaudio: Bitte eine Anwendung / ein Fenster wählen.',
+        )
+      }
+      loopback = { mode: 'app', processId, processName }
+    } else {
+      loopback = { mode: 'desktop' }
+    }
+  } else if (loopbackSource && !useWasapiLoopback) {
+    throw new Error(
+      'Desktop-/Anwendungsaudio: WASAPI-Helper fehlt (resources/wasapi-capture).',
+    )
   }
 
   if (audioTracks.length === 0) {
-    args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000')
+    args.push(
+      '-f',
+      'lavfi',
+      '-i',
+      `anullsrc=channel_layout=${aLayout}:sample_rate=${aRate}`,
+    )
     audioTracks.push({ index: inputIndex++, volume: 1 })
   }
+
+  const aFormat = `aformat=sample_fmts=fltp:sample_rates=${aRate}:channel_layouts=${aLayout}`
 
   if (audioTracks.length === 1) {
     const t = audioTracks[0]
     filterParts.push(
-      `[${t.index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${t.volume}[aout]`,
+      `[${t.index}:a]${aFormat},volume=${t.volume}[aout]`,
     )
   } else {
     const labels = audioTracks.map((t, idx) => {
       filterParts.push(
-        `[${t.index}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${t.volume}[a${idx}]`,
+        `[${t.index}:a]${aFormat},volume=${t.volume}[a${idx}]`,
       )
       return `[a${idx}]`
     })
@@ -433,16 +563,16 @@ export function buildFfmpegArgs(options: {
 
   args.push('-filter_complex', filterParts.join(';'))
   args.push('-map', '[vout]', '-map', '[aout]')
-  args.push(...buildVideoEncoderArgs(settings.encoder, fps))
+  args.push(...buildVideoEncoderArgs(encoder, fps))
   args.push(
     '-c:a',
     'aac',
     '-b:a',
     aBitrate,
     '-ar',
-    '48000',
+    String(aRate),
     '-ac',
-    '2',
+    String(aCh),
     '-shortest',
     '-f',
     'flv',
@@ -450,11 +580,13 @@ export function buildFfmpegArgs(options: {
   )
 
   void escapePath
-  return args
+  return { args, loopback }
 }
+
 
 export class FfmpegStreamer {
   private process: ChildProcessWithoutNullStreams | null = null
+  private captureProcess: ChildProcessWithoutNullStreams | null = null
   private listener: StatusListener | null = null
   private status: StreamStatus = {
     streaming: false,
@@ -482,9 +614,21 @@ export class FfmpegStreamer {
     this.emit()
   }
 
+  private stopCapture(): void {
+    const cap = this.captureProcess
+    this.captureProcess = null
+    if (!cap) return
+    try {
+      cap.kill()
+    } catch {
+      /* ignore */
+    }
+  }
+
   async start(options: {
     settings: StreamSettings
     scene: Scene
+    audioSources: StreamSource[]
     displayIndex: number
   }): Promise<void> {
     if (this.process) {
@@ -498,7 +642,10 @@ export class FfmpegStreamer {
       )
     }
 
-    const args = buildFfmpegArgs(options)
+    const plan = buildFfmpegArgs(options)
+    const { args, loopback } = plan
+    const needsLoopback = Boolean(loopback)
+
     this.setPartial({
       streaming: true,
       startedAt: Date.now(),
@@ -514,6 +661,45 @@ export class FfmpegStreamer {
     })
     this.process = child
 
+    if (needsLoopback && loopback) {
+      const capturePath = getWasapiCapturePath()
+      if (!fs.existsSync(capturePath)) {
+        child.kill()
+        this.process = null
+        throw new Error('WASAPI-Capture nicht gefunden')
+      }
+      const pids =
+        loopback.mode === 'desktop'
+          ? null
+          : await resolveLoopbackPids({
+              processId: loopback.processId,
+              processName: loopback.processName,
+            })
+      if (loopback.mode === 'app' && (!pids || pids.length === 0)) {
+        child.kill()
+        this.process = null
+        throw new Error(
+          'Anwendungsaudio: Keine Prozesse gefunden (App neu wählen?).',
+        )
+      }
+      const cap = spawn(capturePath, buildWasapiCaptureArgs(pids), {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      this.captureProcess = cap
+      cap.stdout.pipe(child.stdin)
+      cap.stderr.on('data', (buf: Buffer) => {
+        const line = buf.toString('utf8').trim()
+        if (line)
+          this.setPartial({ lastLogLine: `[wasapi] ${line.slice(0, 200)}` })
+      })
+      cap.on('error', (err) => {
+        this.setPartial({ error: `WASAPI: ${err.message}` })
+      })
+      cap.on('close', () => {
+        this.captureProcess = null
+      })
+    }
     const onData = (buf: Buffer) => {
       const text = buf.toString('utf8')
       const lines = text.split(/\r?\n/).filter(Boolean)
@@ -526,6 +712,7 @@ export class FfmpegStreamer {
     child.stderr.on('data', onData)
 
     child.on('error', (err) => {
+      this.stopCapture()
       this.process = null
       this.setPartial({
         streaming: false,
@@ -535,6 +722,7 @@ export class FfmpegStreamer {
     })
 
     child.on('close', (code) => {
+      this.stopCapture()
       this.process = null
       const errored = Boolean(code && code !== 0)
       this.setPartial({
@@ -548,24 +736,20 @@ export class FfmpegStreamer {
   }
 
   stop(): void {
+    this.stopCapture()
     if (!this.process) {
       this.setPartial({ streaming: false, startedAt: null })
       return
     }
     const proc = this.process
     try {
-      proc.stdin.write('q')
-      proc.stdin.end()
+      // Bei Loopback ist stdin PCM — kein 'q'
+      proc.kill()
     } catch {
       // ignore
     }
-    setTimeout(() => {
-      if (this.process === proc) {
-        proc.kill()
-        this.process = null
-        this.setPartial({ streaming: false, startedAt: null })
-      }
-    }, 1500)
+    this.process = null
+    this.setPartial({ streaming: false, startedAt: null })
   }
 
   private parseLogLine(line: string): void {

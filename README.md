@@ -2,12 +2,18 @@
 
 Desktop-App zum Streamen auf Twitch, YouTube und Custom-RTMP (Windows).
 
-## Voraussetzungen
+## Für Streamer (empfohlen)
 
-- Node.js 20+
-- Windows 10/11
+1. Installer von der [Releases-Seite](https://github.com/maximilianpichla-crypto/2you-Streaming/releases/latest) herunterladen  
+   (`2you-Streaming-Setup-….exe`)
+2. Setup ausführen (Installationsordner frei wählbar)
+3. App starten — Desktop-Verknüpfung wird angelegt
 
-## Setup
+Einstellungen bleiben bei Updates erhalten (werden nicht mit deinstalliert).
+
+Quellcode oder den kompletten Projektordner brauchst du **nicht**.
+
+## Für Entwickler
 
 ```bash
 npm install
@@ -15,26 +21,28 @@ npm run fetch-ffmpeg
 npm run dev
 ```
 
-`npm run dev` startet Vite + Electron.
+### Installer bauen & veröffentlichen
 
-## Quellen (OBS-ähnlich)
+```bash
+npm run electron:build          # nur lokal → Ordner release/
+npm run release                 # bauen + GitHub Release mit Setup.exe
+```
 
-Über **+ Quelle (wie OBS)** kannst du u. a. hinzufügen:
+Danach liegt der Download unter GitHub Releases; `updates/feed.json` zeigt auf die Setup.exe.
 
-- Bildschirm- / Fenster- / Spielaufnahme
-- Videoaufnahmegerät (Webcam)
-- Audio-Eingabe / -Ausgabe / Anwendungsaudio
-- Browserquelle, Bild, Bilddiashow, Medienquelle
-- Text, Farbquelle, eingebettete Szene
+### Windows SmartScreen / „Viren“-Warnung
 
+Ohne **Code-Signing-Zertifikat** warnt Windows bei jedem Download („unbekannter Herausgeber“). Das lässt sich nicht wegklicken-programmieren — nur signieren.
+
+1. OV Code-Signing-Zertifikat kaufen (z. B. SSL.com, Sectigo, DigiCert) oder Azure Trusted Signing
+2. Als `certs/codesign.pfx` speichern
+3. `copy .env.signing.example .env.signing` und Passwort eintragen
+4. `npm run release` — electron-builder signiert die Setup.exe automatisch
+
+Nach ein paar vertrauenswürdigen Downloads baut SmartScreen Reputation auf; die Warnung verschwindet dann für Nutzer.
 
 ## Technik
 
 - Electron + React + Vite
-- FFmpeg (`gdigrab` + optional DirectShow-Mikrofon) → RTMP/FLV
-
-## Hinweise
-
-- v1 erfasst den Desktop per FFmpeg `gdigrab` und sendet an RTMP
-- Webcam erscheint in der Vorschau; der Live-Encode nutzt in v1 primär den Bildschirm
-- Für Twitch den Stream-Key aus dem Creator Dashboard verwenden
+- FFmpeg → RTMP/FLV
+- WASAPI-Helper für Desktop-/Anwendungsaudio
