@@ -1,6 +1,6 @@
 {
   "name": "2you-streaming",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "2you Streaming – desktop streaming app for Twitch and more",
   "main": "dist-electron/main.js",
   "author": "2you Streaming",
@@ -42,8 +42,10 @@
     "appId": "com.2you.streaming",
     "productName": "2you Streaming",
     "directories": {
-      "output": "release-out"
+      "output": "release-out",
+      "buildResources": "build"
     },
+    "icon": "build/icon.ico",
     "publish": [
       {
         "provider": "github",
@@ -56,6 +58,10 @@
       "dist-electron/**/*"
     ],
     "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
       {
         "from": "resources/ffmpeg",
         "to": "ffmpeg",
@@ -81,6 +87,7 @@
       }
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ],
@@ -101,7 +108,14 @@
         "en_US"
       ],
       "language": "1031",
-      "displayLanguageSelector": false
+      "displayLanguageSelector": false,
+      "include": "build/installer.nsh",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "installerHeader": "build/installerHeader.bmp",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerSidebar": "build/uninstallerSidebar.bmp"
     }
   },
   "allowScripts": {

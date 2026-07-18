@@ -28,6 +28,7 @@ import {
   isVisualSource,
   isAudioSource,
 } from './shared/types'
+import appIcon from './assets/app-icon.png'
 import { UpdateBanner } from './components/UpdateBanner'
 import { applyTheme } from './theme'
 
@@ -378,10 +379,13 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark">
-            2<span>you</span> Streaming
+          <img className="brand-icon" src={appIcon} alt="" width={28} height={28} draggable={false} />
+          <div className="brand-text">
+            <div className="brand-mark">
+              2<span>you</span> Streaming
+            </div>
+            <div className="brand-tag">Live · Twitch · YouTube · RTMP</div>
           </div>
-          <div className="brand-tag">Live · Twitch · YouTube · RTMP</div>
         </div>
         <div className="topbar-actions">
           <button

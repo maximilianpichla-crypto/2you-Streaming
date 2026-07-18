@@ -131,7 +131,12 @@ if (!skipBuild) {
       '[release] Warnung: resources/wasapi-capture/audio_capture.exe fehlt — Desktop-/App-Audio im Installer ggf. ohne Helper.',
     )
   }
-  run('npm run electron:build')
+  // Desktop/release-out ist oft gesperrt — Build nach %TEMP%\2you-ebuild
+  fs.mkdirSync(tempReleaseDir, { recursive: true })
+  run('npm run build')
+  run(
+    `npx electron-builder --win nsis --config.directories.output="${tempReleaseDir.replace(/\\/g, '/')}"`,
+  )
 }
 
 const installer = findInstaller(version)

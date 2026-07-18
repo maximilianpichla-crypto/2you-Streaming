@@ -37,5 +37,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    watch: {
+      ignored: [
+        '**/release-out/**',
+        '**/release/**',
+        '**/win-unpacked/**',
+        '**/win-unpacked.tmp/**',
+      ],
+    },
   },
 })

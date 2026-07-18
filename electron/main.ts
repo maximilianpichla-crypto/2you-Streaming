@@ -42,11 +42,21 @@ let mainWindow: BrowserWindow | null = null
 const streamer = new FfmpegStreamer()
 const chat = new TwitchChatService()
 
+function resolveAppIcon(): string | undefined {
+  const candidates = [
+    path.join(process.resourcesPath, 'icon.ico'),
+    path.join(__dirname, '../build/icon.ico'),
+    path.join(app.getAppPath(), 'build', 'icon.ico'),
+  ]
+  return candidates.find((p) => fs.existsSync(p))
+}
+
 function createWindow(): void {
   // Kein natives Menü (File/Edit/…) — nur die App-Oberfläche
   Menu.setApplicationMenu(null)
 
   const themeBg = loadConfig().theme?.bg ?? '#0e1116'
+  const icon = resolveAppIcon()
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -56,6 +66,7 @@ function createWindow(): void {
     backgroundColor: themeBg,
     frame: false,
     autoHideMenuBar: true,
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

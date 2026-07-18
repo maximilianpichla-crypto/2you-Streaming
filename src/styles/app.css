@@ -271,14 +271,30 @@ select:focus {
 
 .brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.65rem;
+}
+
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  flex-shrink: 0;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  line-height: 1.15;
 }
 
 .brand-mark {
   font-family: var(--font-display);
   font-weight: 800;
-  font-size: 1.28rem;
+  font-size: 1.12rem;
   letter-spacing: -0.04em;
 }
 
@@ -288,7 +304,7 @@ select:focus {
 
 .brand-tag {
   color: var(--text-muted);
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 500;
 }
 
