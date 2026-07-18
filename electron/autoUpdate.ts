@@ -23,6 +23,8 @@ type StatusListener = (status: AutoUpdateStatus) => void
 let listener: StatusListener | null = null
 let lastStatus: AutoUpdateStatus = { state: 'idle' }
 let started = false
+let canAutoRestart: () => boolean = () => true
+let autoInstallTimer: ReturnType<typeof setTimeout> | null = null
 
 function emit(partial: Partial<AutoUpdateStatus> & { state: AutoUpdateStatus['state'] }) {
   lastStatus = { ...lastStatus, ...partial }
@@ -42,10 +44,79 @@ export function onAutoUpdateStatus(cb: StatusListener): void {
   listener = cb
 }
 
+function clearAutoInstallTimer(): void {
+  if (autoInstallTimer) {
+    clearTimeout(autoInstallTimer)
+    autoInstallTimer = null
+  }
+}
+
+/** Still installieren — kein NSIS-Assistent (/S). */
+function runSilentInstall(forceRunAfter: boolean): boolean {
+  if (lastStatus.state !== 'downloaded') return false
+  clearAutoInstallTimer()
+  emit({
+    state: 'downloaded',
+    message: 'Update wird still installiert…',
+  })
+  setImmediate(() => {
+    // isSilent=true → /S (kein Wizard), isForceRunAfter → App danach starten
+    autoUpdater.quitAndInstall(true, forceRunAfter)
+  })
+  return true
+}
+
+/**
+ * Nach Download: ohne Stream sofort still neu starten.
+ * Während eines Streams: beim Beenden still installieren (electron-updater).
+ */
+function scheduleSilentAutoInstall(version?: string): void {
+  clearAutoInstallTimer()
+  if (!canAutoRestart()) {
+    emit({
+      state: 'downloaded',
+      version,
+      percent: 100,
+      message:
+        'Update geladen — wird beim Beenden still installiert (kein Installer-Fenster)',
+    })
+    return
+  }
+
+  emit({
+    state: 'downloaded',
+    version,
+    percent: 100,
+    message: 'Update geladen — installiert in wenigen Sekunden still…',
+  })
+
+  autoInstallTimer = setTimeout(() => {
+    autoInstallTimer = null
+    if (lastStatus.state !== 'downloaded') return
+    if (!canAutoRestart()) {
+      emit({
+        state: 'downloaded',
+        version,
+        percent: 100,
+        message:
+          'Update bereit — Stream läuft, Installation beim Beenden (still)',
+      })
+      return
+    }
+    runSilentInstall(true)
+  }, 6000)
+}
+
 /** Silent auto-update from GitHub Releases (NSIS). Nur in gepackter App. */
-export function setupAutoUpdater(): void {
+export function setupAutoUpdater(options?: {
+  canAutoRestart?: () => boolean
+}): void {
   if (started) return
   started = true
+
+  if (options?.canAutoRestart) {
+    canAutoRestart = options.canAutoRestart
+  }
 
   if (!app.isPackaged) {
     emit({ state: 'idle', message: 'Dev-Modus — Auto-Update deaktiviert' })
@@ -55,6 +126,7 @@ export function setupAutoUpdater(): void {
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.allowDowngrade = false
+  autoUpdater.autoRunAppAfterInstall = true
   // Unsignierte Builds: sonst schlägt die Signaturprüfung fehl
   autoUpdater.forceDevUpdateConfig = false
 
@@ -90,11 +162,13 @@ export function setupAutoUpdater(): void {
       state: 'downloaded',
       version: info.version,
       percent: 100,
-      message: `Update ${info.version} bereit — wird beim Beenden installiert`,
+      message: `Update ${info.version} geladen`,
     })
+    scheduleSilentAutoInstall(info.version)
   })
 
   autoUpdater.on('error', (err) => {
+    clearAutoInstallTimer()
     emit({
       state: 'error',
       message: err?.message || 'Update fehlgeschlagen',
@@ -116,12 +190,7 @@ export async function checkAutoUpdate(): Promise<AutoUpdateStatus> {
   return getAutoUpdateStatus()
 }
 
-/** Sofort installieren und App neu starten */
+/** Sofort still installieren und App neu starten (kein Installer-Assistent). */
 export function installAutoUpdateNow(): boolean {
-  if (lastStatus.state !== 'downloaded') return false
-  // isSilent=false, isForceRunAfter=true
-  setImmediate(() => {
-    autoUpdater.quitAndInstall(false, true)
-  })
-  return true
+  return runSilentInstall(true)
 }

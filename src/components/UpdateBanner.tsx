@@ -74,7 +74,7 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
     auto?.state === 'downloading'
       ? 'Update wird geladen'
       : auto?.state === 'downloaded'
-        ? 'Update bereit'
+        ? 'Update wird installiert'
         : auto?.state === 'available' || auto?.state === 'checking'
           ? 'Update'
           : (item?.title ?? result?.feed.title ?? 'Update')
@@ -84,7 +84,7 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
     item?.body ||
     result?.feed.body ||
     (result?.hasVersionUpdate
-      ? 'Update wird im Hintergrund geladen und beim Beenden installiert.'
+      ? 'Update wird im Hintergrund geladen und still installiert — ohne Installer-Fenster.'
       : '')
 
   const level = item?.level ?? result?.feed.level ?? 'update'
@@ -129,7 +129,7 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
             className="primary"
             onClick={() => void window.twoYou.installUpdateNow()}
           >
-            Jetzt neu starten
+            Jetzt installieren
           </button>
         ) : null}
         {auto?.state === 'downloading' ? (
@@ -137,7 +137,7 @@ export function UpdateBanner({ checkRequest = 0, onManualChecked }: Props) {
         ) : null}
         {result?.hasVersionUpdate && auto?.state !== 'downloaded' ? (
           <span className="update-banner-meta">
-            Einstellungen bleiben erhalten.
+            Kein Installer-Assistent — Einstellungen bleiben erhalten.
           </span>
         ) : null}
         {!result?.forceUpdate && auto?.state !== 'downloading' ? (

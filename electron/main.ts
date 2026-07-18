@@ -418,7 +418,9 @@ app.whenReady().then(() => {
   registerIpc()
   // App-Update: Szenen, Quellen, Settings bleiben in userData erhalten
   preserveConfigAcrossAppUpdate()
-  setupAutoUpdater()
+  setupAutoUpdater({
+    canAutoRestart: () => !streamer.getStatus().streaming,
+  })
   createWindow()
   // Beim Start still Update von GitHub holen (nur gepackt)
   void checkAutoUpdate()
