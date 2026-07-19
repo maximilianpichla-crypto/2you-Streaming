@@ -42,14 +42,20 @@ export function getFfmpegPath(): string {
   return 'ffmpeg'
 }
 
-export async function listDshowDevices(): Promise<{
-  video: string[]
-  audio: string[]
+export type DshowDevice = {
+  name: string
+  /** GUID-Form — nötig wenn der Anzeigename `:` o.ä. enthält */
+  alternative?: string
+}
+
+export async function listDshowDevicesDetailed(): Promise<{
+  video: DshowDevice[]
+  audio: DshowDevice[]
 }> {
   const ffmpegPath = getFfmpegPath()
   return new Promise((resolve) => {
-    const video: string[] = []
-    const audio: string[] = []
+    const video: DshowDevice[] = []
+    const audio: DshowDevice[] = []
     const child = spawn(
       ffmpegPath,
       ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
@@ -61,18 +67,65 @@ export async function listDshowDevices(): Promise<{
     })
     child.on('close', () => {
       const lines = out.split(/\r?\n/)
-      for (const line of lines) {
-        const match = line.match(/"([^"]+)"\s+\((audio|video)\)/i)
+      for (let i = 0; i < lines.length; i++) {
+        const match = lines[i].match(/"([^"]+)"\s+\((audio|video)\)/i)
         if (!match) continue
         const name = match[1]
-        const kind = match[2].toLowerCase()
-        if (kind === 'audio') audio.push(name)
-        else video.push(name)
+        const kind = match[2].toLowerCase() as 'audio' | 'video'
+        let alternative: string | undefined
+        for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+          const a = lines[j].match(/Alternative name\s+"([^"]+)"/i)
+          if (a) {
+            alternative = a[1]
+            break
+          }
+          if (/"([^"]+)"\s+\((audio|video)\)/i.test(lines[j])) break
+        }
+        const device: DshowDevice = { name, alternative }
+        if (kind === 'audio') audio.push(device)
+        else video.push(device)
       }
       resolve({ video, audio })
     })
     child.on('error', () => resolve({ video: [], audio: [] }))
   })
+}
+
+/** Friendly-Namen → dshow-Input (`audio=@device_…` wenn nötig). */
+export function dshowInputArg(
+  kind: 'audio' | 'video',
+  name: string,
+  devices: DshowDevice[],
+): string {
+  const trimmed = name.trim()
+  if (!trimmed) return `${kind}=`
+  if (trimmed.startsWith('@device_')) return `${kind}=${trimmed}`
+  const hit =
+    devices.find((d) => d.name === trimmed) ||
+    devices.find((d) => d.alternative === trimmed)
+  // Namen mit `:` / `|` sind für dshow-Parser kaputt → immer Alternative nutzen
+  if (hit?.alternative && /[:|]/.test(hit.name)) {
+    return `${kind}=${hit.alternative}`
+  }
+  if (hit?.alternative && /[:|]/.test(trimmed)) {
+    return `${kind}=${hit.alternative}`
+  }
+  // Fallback: Alternative bevorzugen wenn Friendly-Name Sonderzeichen hat
+  if (/[:|]/.test(trimmed) && hit?.alternative) {
+    return `${kind}=${hit.alternative}`
+  }
+  return `${kind}=${hit?.name || trimmed}`
+}
+
+export async function listDshowDevices(): Promise<{
+  video: string[]
+  audio: string[]
+}> {
+  const detailed = await listDshowDevicesDetailed()
+  return {
+    video: detailed.video.map((d) => d.name),
+    audio: detailed.audio.map((d) => d.name),
+  }
 }
 
 /** Welche H.264-Encoder FFmpeg auf diesem System anbietet */
@@ -304,8 +357,17 @@ export function buildFfmpegArgs(options: {
   scene: Scene
   audioSources: StreamSource[]
   displayIndex: number
+  dshowAudio?: DshowDevice[]
+  dshowVideo?: DshowDevice[]
 }): BuiltFfmpegPlan {
-  const { settings: rawSettings, scene, audioSources, displayIndex } = options
+  const {
+    settings: rawSettings,
+    scene,
+    audioSources,
+    displayIndex,
+    dshowAudio = [],
+    dshowVideo = [],
+  } = options
   const encoder = normalizeEncoderSettings(rawSettings.encoder)
   const settings = { ...rawSettings, encoder }
   const { w, h } = parseResolution(encoder.resolution)
@@ -324,7 +386,6 @@ export function buildFfmpegArgs(options: {
   )
   const visual = enabledVisual
   const enabledAudio = (audioSources ?? []).filter((s) => s.enabled)
-  const mic = enabledAudio.find((s) => s.type === 'microphone')
   const desktopAudio = enabledAudio.find((s) => s.type === 'desktop_audio')
   const appAudio = enabledAudio.find((s) => s.type === 'app_audio')
   const loopbackSource = appAudio ?? desktopAudio
@@ -450,7 +511,7 @@ export function buildFfmpegArgs(options: {
         '-framerate',
         String(Math.min(fps, 30)),
         '-i',
-        `video=${name}`,
+        dshowInputArg('video', name, dshowVideo),
       )
       pushOverlay(source, inputIndex++)
       continue
@@ -490,48 +551,76 @@ export function buildFfmpegArgs(options: {
 
   type AudioTrack = { index: number; volume: number }
   const audioTracks: AudioTrack[] = []
+  const usedMicKeys = new Set<string>()
 
-  const micName = mic?.deviceLabel || mic?.deviceId || ''
-  if (mic && micName) {
-    args.push('-f', 'dshow', '-thread_queue_size', '1024', '-i', `audio=${micName}`)
+  for (const micSrc of enabledAudio.filter((s) => s.type === 'microphone')) {
+    const micName = micSrc.deviceLabel || micSrc.deviceId || ''
+    if (!micName) continue
+    const key = micName.toLowerCase()
+    if (usedMicKeys.has(key)) continue // gleiches Gerät nicht 2× öffnen
+    usedMicKeys.add(key)
+    args.push(
+      '-f',
+      'dshow',
+      '-thread_queue_size',
+      '1024',
+      '-i',
+      dshowInputArg('audio', micName, dshowAudio),
+    )
     audioTracks.push({
       index: inputIndex++,
-      volume: Math.max(0, Math.min(100, mic.settings?.volume ?? 100)) / 100,
+      volume: Math.max(0, Math.min(100, micSrc.settings?.volume ?? 100)) / 100,
     })
   }
 
   let loopback: BuiltFfmpegPlan['loopback']
 
   if (loopbackSource && useWasapiLoopback) {
-    args.push(
-      '-f',
-      's16le',
-      '-ar',
-      '48000',
-      '-ac',
-      '2',
-      '-thread_queue_size',
-      '2048',
-      '-i',
-      'pipe:0',
-    )
-    audioTracks.push({
-      index: inputIndex++,
-      volume:
-        Math.max(0, Math.min(100, loopbackSource.settings?.volume ?? 100)) / 100,
-    })
     if (loopbackSource.type === 'app_audio') {
       const processId =
         loopbackSource.settings?.processId ??
         (Number.parseInt(String(loopbackSource.deviceId ?? ''), 10) || undefined)
       const processName = loopbackSource.settings?.processName
-      if (!processId && !processName) {
-        throw new Error(
-          'Anwendungsaudio: Bitte eine Anwendung / ein Fenster wählen.',
+      if (processId || processName) {
+        args.push(
+          '-f',
+          's16le',
+          '-ar',
+          '48000',
+          '-ac',
+          '2',
+          '-thread_queue_size',
+          '2048',
+          '-i',
+          'pipe:0',
         )
+        audioTracks.push({
+          index: inputIndex++,
+          volume:
+            Math.max(0, Math.min(100, loopbackSource.settings?.volume ?? 100)) /
+            100,
+        })
+        loopback = { mode: 'app', processId, processName }
       }
-      loopback = { mode: 'app', processId, processName }
     } else {
+      args.push(
+        '-f',
+        's16le',
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
+        '-thread_queue_size',
+        '2048',
+        '-i',
+        'pipe:0',
+      )
+      audioTracks.push({
+        index: inputIndex++,
+        volume:
+          Math.max(0, Math.min(100, loopbackSource.settings?.volume ?? 100)) /
+          100,
+      })
       loopback = { mode: 'desktop' }
     }
   } else if (loopbackSource && !useWasapiLoopback) {
@@ -572,9 +661,8 @@ export function buildFfmpegArgs(options: {
 
   if (delaySec > 0) {
     // Zuschauer sehen/hören alles delaySec später (wie OBS Stream Delay)
-    const adelay =
-      aCh === 1 ? `${delayMs}` : `${delayMs}|${delayMs}`
-    filterParts.push(`[apre]adelay=${adelay}:all=1[aout]`)
+    const adelay = aCh === 1 ? `${delayMs}` : `${delayMs}|${delayMs}`
+    filterParts.push(`[apre]adelay=${adelay}[aout]`)
   }
 
   args.push('-filter_complex', filterParts.join(';'))
@@ -694,9 +782,40 @@ export class FfmpegStreamer {
       )
     }
 
-    const plan = buildFfmpegArgs(options)
-    const { args, loopback } = plan
-    const needsLoopback = Boolean(loopback)
+    const detailed = await listDshowDevicesDetailed()
+    let plan = buildFfmpegArgs({
+      ...options,
+      dshowAudio: detailed.audio,
+      dshowVideo: detailed.video,
+    })
+    let { args, loopback } = plan
+    let needsLoopback = Boolean(loopback)
+
+    // App-Audio: toter Prozess → ohne App-Audio neu bauen statt Abbruch
+    if (needsLoopback && loopback?.mode === 'app') {
+      const pids = await resolveLoopbackPids({
+        processId: loopback.processId,
+        processName: loopback.processName,
+      })
+      if (!pids || pids.length === 0) {
+        const filteredAudio = (options.audioSources ?? []).map((s) =>
+          s.type === 'app_audio' ? { ...s, enabled: false } : s,
+        )
+        plan = buildFfmpegArgs({
+          ...options,
+          audioSources: filteredAudio,
+          dshowAudio: detailed.audio,
+          dshowVideo: detailed.video,
+        })
+        args = plan.args
+        loopback = plan.loopback
+        needsLoopback = Boolean(loopback)
+        this.setPartial({
+          lastLogLine:
+            'App-Audio übersprungen (Prozess nicht gefunden) — Stream startet ohne.',
+        })
+      }
+    }
 
     this.setPartial({
       streaming: true,
@@ -704,7 +823,7 @@ export class FfmpegStreamer {
       bitrateKbps: null,
       fps: null,
       error: null,
-      lastLogLine: null,
+      lastLogLine: this.status.lastLogLine,
     })
 
     const child = spawn(ffmpegPath, args, {
@@ -732,7 +851,7 @@ export class FfmpegStreamer {
         child.kill()
         this.process = null
         throw new Error(
-          'Anwendungsaudio: Keine Prozesse gefunden (App neu wählen?).',
+          'Anwendungsaudio: Prozess nicht gefunden. App neu wählen oder Quelle deaktivieren.',
         )
       }
       const cap = spawn(capturePath, buildWasapiCaptureArgs(pids), {
@@ -753,6 +872,7 @@ export class FfmpegStreamer {
         this.captureProcess = null
       })
     }
+
     const onData = (buf: Buffer) => {
       const text = buf.toString('utf8')
       const lines = text.split(/\r?\n/).filter(Boolean)
